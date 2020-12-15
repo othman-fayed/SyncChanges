@@ -211,9 +211,10 @@ namespace SyncChanges
                         join sys.tables t on t.object_id = tr.object_id
                         join sys.schemas s on s.schema_id = t.schema_id
                         join sys.columns a on a.object_id = t.object_id
+                        JOIN sys.types ct ON ct.system_type_id = a.system_type_id
                         left join sys.index_columns c on c.object_id = t.object_id and c.column_id = a.column_id
                         left join sys.indexes i on i.object_id = t.object_id and i.index_id = c.index_id
-                        where a.is_computed = 0
+                        where a.is_computed = 0 and ct.name != 'timestamp'
                         ) X
                         group by TableName, ColumnName
                         order by TableName, ColumnName";
