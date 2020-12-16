@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 
 namespace SyncChanges
@@ -203,10 +204,10 @@ namespace SyncChanges
             {
                 using (var db = GetDatabase(dbInfo.ConnectionString, DatabaseType.SqlServer2008))
                 {
-                    var sql = @"select TableName, ColumnName, iif(max(cast(is_primary_key as tinyint)) = 1, 1, 0) PrimaryKey from
+                    var sql = @"select TableName, ColumnName, iif(max(cast(is_primary_key as tinyint)) = 1, 1, 0) PrimaryKey, iif(max(cast(is_identity as tinyint)) = 1, 1, 0) IdentityKey from
                         (
                         select ('[' + s.name + '].[' + t.name + ']') TableName, ('[' + COL_NAME(t.object_id, a.column_id) + ']') ColumnName,
-                        i.is_primary_key
+                        i.is_primary_key, a.is_identity
                         from sys.change_tracking_tables tr
                         join sys.tables t on t.object_id = tr.object_id
                         join sys.schemas s on s.schema_id = t.schema_id
@@ -224,7 +225,8 @@ namespace SyncChanges
                         {
                             Name = (string)g.Key,
                             KeyColumns = g.Where(c => (int)c.PrimaryKey > 0).Select(c => (string)c.ColumnName).ToList(),
-                            OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList()
+                            OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
+                            HasIdentityColumn = g.Any(c => (int)c.IdentityKey == 1)
                         }).ToList();
 
                     var fks = db.Fetch<ForeignKeyConstraint>(@"select obj.name AS ForeignKeyName,
@@ -516,11 +518,18 @@ namespace SyncChanges
                 // Insert
                 case 'I':
                     var insertColumnNames = change.GetColumnNames();
-                    var insertSql = $"set IDENTITY_INSERT {tableName} ON; " +
-                        string.Format("insert into {0} ({1}) values ({2}); ", tableName,
+                    //var insertSql = $"set IDENTITY_INSERT {tableName} ON; " +
+                    //    string.Format("insert into {0} ({1}) values ({2}); ", tableName,
+                    //    string.Join(", ", insertColumnNames),
+                    //    string.Join(", ", Parameters(insertColumnNames.Count))) +
+                    //    $"set IDENTITY_INSERT {tableName} OFF";
+                    var insertSql = string.Format("insert into {0} ({1}) values ({2})", tableName,
                         string.Join(", ", insertColumnNames),
-                        string.Join(", ", Parameters(insertColumnNames.Count))) +
-                        $"set IDENTITY_INSERT {tableName} OFF";
+                        string.Join(", ", Parameters(insertColumnNames.Count)));
+                    if(table.HasIdentityColumn)
+                    {
+                        insertSql = $"set IDENTITY_INSERT {tableName} ON; {insertSql}; set IDENTITY_INSERT {tableName} OFF";
+                    }
                     var insertValues = change.GetValues();
                     Log.Debug($"Executing insert: {insertSql} ({FormatArgs(insertValues)})");
                     if (!DryRun)
