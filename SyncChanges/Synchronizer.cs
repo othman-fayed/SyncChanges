@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 
 namespace SyncChanges
@@ -204,6 +205,8 @@ namespace SyncChanges
             try
             {
                 using var db = GetDatabase(dbInfo.ConnectionString, DatabaseType.SqlServer2008);
+                {
+                    var sql = @"select TableName, ColumnName, iif(max(cast(is_primary_key as tinyint)) = 1, 1, 0) PrimaryKey, iif(max(cast(is_identity as tinyint)) = 1, 1, 0) IdentityKey from
                 var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey,
                         coalesce(max(cast(is_identity as tinyint)), 0) IsIdentity from
                         (
@@ -221,16 +224,18 @@ namespace SyncChanges
                         group by TableName, ColumnName
                         order by TableName, ColumnName";
 
-                var tables = db.Fetch<dynamic>(sql).GroupBy(t => t.TableName)
-                    .Select(g => new TableInfo
-                    {
-                        Name = (string)g.Key,
-                        KeyColumns = g.Where(c => (int)c.PrimaryKey > 0).Select(c => (string)c.ColumnName).ToList(),
+                    var tables = db.Fetch<dynamic>(sql).GroupBy(t => t.TableName)
+                        .Select(g => new TableInfo
+                        {
+                            Name = (string)g.Key,
+                            KeyColumns = g.Where(c => (int)c.PrimaryKey > 0).Select(c => (string)c.ColumnName).ToList(),
                         OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
                         HasIdentity = g.Any(c => (int)c.IsIdentity > 0)
-                    }).ToList();
+                            OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
+                            HasIdentityColumn = g.Any(c => (int)c.IdentityKey == 1)
+                        }).ToList();
 
-                var fks = db.Fetch<ForeignKeyConstraint>(@"select obj.name AS ForeignKeyName,
+                    var fks = db.Fetch<ForeignKeyConstraint>(@"select obj.name AS ForeignKeyName,
                             ('[' + sch.name + '].[' + tab1.name + ']') TableName,
                             ('[' +  col1.name + ']') ColumnName,
                             ('[' + sch2.name + '].[' + tab2.name + ']') ReferencedTableName,
@@ -252,8 +257,8 @@ namespace SyncChanges
                             on col2.column_id = referenced_column_id AND col2.object_id = tab2.object_id
                         where obj.is_disabled = 0");
 
-                foreach (var table in tables)
-                    table.ForeignKeyConstraints = fks.Where(f => f.TableName == table.Name).ToList();
+                    foreach (var table in tables)
+                        table.ForeignKeyConstraints = fks.Where(f => f.TableName == table.Name).ToList();
 
                 var uqcs = db.Fetch<UniqueColumn>(@"SELECT
                              IndexId = ('[' + sch.name + '].[' + t.name + '].[' + ind.name + ']'),
@@ -289,8 +294,8 @@ namespace SyncChanges
                 foreach (var table in tables)
                     table.UniqueConstraints = uqs.Where(u => u.TableName == table.Name).ToList();
 
-                return tables;
-            }
+                    return tables;
+                }
             catch (Exception ex)
             {
                 Log.Fatal(ex, "Error getting tables to replicate from source database");
@@ -322,59 +327,59 @@ namespace SyncChanges
                     using var db = GetDatabase(destination.ConnectionString, DatabaseType.SqlServer2005);
                     using var transaction = db.GetTransaction(System.Data.IsolationLevel.ReadUncommitted);
 
-                    try
-                    {
-                        var changes = changeInfo.Changes;
-                        var disabledForeignKeyConstraints = new Dictionary<ForeignKeyConstraint, long>();
-
-                        for (int i = 0; i < changes.Count; i++)
+                        try
                         {
-                            var change = changes[i];
-                            Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion})");
+                            var changes = changeInfo.Changes;
+                            var disabledForeignKeyConstraints = new Dictionary<ForeignKeyConstraint, long>();
 
-                            foreach (var fk in change.ForeignKeyConstraintsToDisable)
+                            for (int i = 0; i < changes.Count; i++)
                             {
-                                if (disabledForeignKeyConstraints.TryGetValue(fk.Key, out long untilVersion))
+                                var change = changes[i];
+                                Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion})");
+
+                                foreach (var fk in change.ForeignKeyConstraintsToDisable)
                                 {
-                                    // FK is already disabled, check if it needs to be deferred further than currently planned
-                                    if (fk.Value > untilVersion)
+                                    if (disabledForeignKeyConstraints.TryGetValue(fk.Key, out long untilVersion))
+                                    {
+                                        // FK is already disabled, check if it needs to be deferred further than currently planned
+                                        if (fk.Value > untilVersion)
+                                            disabledForeignKeyConstraints[fk.Key] = fk.Value;
+                                    }
+                                    else
+                                    {
+                                        DisableForeignKeyConstraint(db, fk.Key);
                                         disabledForeignKeyConstraints[fk.Key] = fk.Value;
+                                    }
                                 }
-                                else
+
+                                PerformChange(db, change);
+
+                                if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
                                 {
-                                    DisableForeignKeyConstraint(db, fk.Key);
-                                    disabledForeignKeyConstraints[fk.Key] = fk.Value;
+                                    foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
+                                    {
+                                        ReenableForeignKeyConstraint(db, fk);
+                                        disabledForeignKeyConstraints.Remove(fk);
+                                    }
                                 }
                             }
 
-                            PerformChange(db, change);
-
-                            if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
+                            if (!DryRun)
                             {
-                                foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
-                                {
-                                    ReenableForeignKeyConstraint(db, fk);
-                                    disabledForeignKeyConstraints.Remove(fk);
-                                }
+                                SetSyncVersion(db, changeInfo.Version);
+                                transaction.Complete();
                             }
-                        }
 
-                        if (!DryRun)
-                        {
-                            SetSyncVersion(db, changeInfo.Version);
-                            transaction.Complete();
+                            Log.Info($"Destination {destination.Name} now at version {changeInfo.Version}");
                         }
-
-                        Log.Info($"Destination {destination.Name} now at version {changeInfo.Version}");
-                    }
 #pragma warning disable CA1031 // Do not catch general exception types
-                    catch (Exception ex)
-                    {
-                        Error = true;
-                        Log.Error(ex, $"Error replicating changes to destination {destination.Name}");
-                    }
+                        catch (Exception ex)
+                        {
+                            Error = true;
+                            Log.Error(ex, $"Error replicating changes to destination {destination.Name}");
+                        }
 #pragma warning restore CA1031 // Do not catch general exception types
-                }
+                    }
 #pragma warning disable CA1031 // Do not catch general exception types
                 catch (Exception ex)
                 {
@@ -466,37 +471,37 @@ namespace SyncChanges
                     var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql, destinationVersion);
 
                     using var reader = cmd.ExecuteReader();
-                    var numChanges = 0;
+                        var numChanges = 0;
 
-                    while (reader.Read())
-                    {
-                        var col = 0;
-                        var change = new Change { Operation = ((string)reader[col])[0], Table = table };
-                        col++;
-                        var version = reader.GetInt64(col);
-                        change.Version = version;
-                        col++;
-                        var creationVersion = reader.IsDBNull(col) ? version : reader.GetInt64(col);
-                        change.CreationVersion = creationVersion;
-                        col++;
-
-                        if (!snapshotIsolationEnabled && Math.Min(version, creationVersion) > changeInfo.Version)
+                        while (reader.Read())
                         {
-                            Log.Warn($"Ignoring change version {Math.Min(version, creationVersion)}");
-                            continue;
+                            var col = 0;
+                            var change = new Change { Operation = ((string)reader[col])[0], Table = table };
+                            col++;
+                            var version = reader.GetInt64(col);
+                            change.Version = version;
+                            col++;
+                            var creationVersion = reader.IsDBNull(col) ? version : reader.GetInt64(col);
+                            change.CreationVersion = creationVersion;
+                            col++;
+
+                            if (!snapshotIsolationEnabled && Math.Min(version, creationVersion) > changeInfo.Version)
+                            {
+                                Log.Warn($"Ignoring change version {Math.Min(version, creationVersion)}");
+                                continue;
+                            }
+
+                            for (int i = 0; i < table.KeyColumns.Count; i++, col++)
+                                change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
+                            for (int i = 0; i < table.OtherColumns.Count; i++, col++)
+                                change.Others[table.OtherColumns[i]] = reader.GetValue(col);
+
+                            changes.Add(change);
+                            numChanges++;
                         }
 
-                        for (int i = 0; i < table.KeyColumns.Count; i++, col++)
-                            change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
-                        for (int i = 0; i < table.OtherColumns.Count; i++, col++)
-                            change.Others[table.OtherColumns[i]] = reader.GetValue(col);
-
-                        changes.Add(change);
-                        numChanges++;
+                        Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
                     }
-
-                    Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
-                }
 
                 if (snapshotIsolationEnabled)
                     db.CompleteTransaction();
@@ -553,8 +558,19 @@ namespace SyncChanges
                 // Insert
                 case 'I':
                     var insertColumnNames = change.GetColumnNames();
+                    //var insertSql = $"set IDENTITY_INSERT {tableName} ON; " +
+                    //    string.Format("insert into {0} ({1}) values ({2}); ", tableName,
+                    //    string.Join(", ", insertColumnNames),
+                    //    string.Join(", ", Parameters(insertColumnNames.Count))) +
+                    //    $"set IDENTITY_INSERT {tableName} OFF";
+                    var insertSql = string.Format("insert into {0} ({1}) values ({2})", tableName,
                     var insertSql = string.Format("insert into {0} ({1}) values ({2})", tableName,
                         string.Join(", ", insertColumnNames),
+                        string.Join(", ", Parameters(insertColumnNames.Count)));
+                    if(table.HasIdentityColumn)
+                    {
+                        insertSql = $"set IDENTITY_INSERT {tableName} ON; {insertSql}; set IDENTITY_INSERT {tableName} OFF";
+                    }
                         string.Join(", ", Parameters(insertColumnNames.Count)));
                     var insertValues = change.GetValues();
                     if (table.HasIdentity)
@@ -599,29 +615,29 @@ namespace SyncChanges
             try
             {
                 using var db = GetDatabase(dbInfo.ConnectionString, DatabaseType.SqlServer2005);
-                var syncInfoTableExists = db.ExecuteScalar<string>("select top(1) name from sys.tables where name ='SyncInfo'") != null;
-                long currentVersion;
+                    var syncInfoTableExists = db.ExecuteScalar<string>("select top(1) name from sys.tables where name ='SyncInfo'") != null;
+                    long currentVersion;
 
-                if (!syncInfoTableExists)
-                {
-                    Log.Info($"SyncInfo table does not exist in database {dbInfo.Name}");
-                    currentVersion = db.ExecuteScalar<long?>("select CHANGE_TRACKING_CURRENT_VERSION()") ?? -1;
-                    if (currentVersion < 0)
+                    if (!syncInfoTableExists)
                     {
-                        Log.Info($"Change tracking not enabled in database {dbInfo.Name}, assuming version 0");
-                        currentVersion = 0;
+                        Log.Info($"SyncInfo table does not exist in database {dbInfo.Name}");
+                        currentVersion = db.ExecuteScalar<long?>("select CHANGE_TRACKING_CURRENT_VERSION()") ?? -1;
+                        if (currentVersion < 0)
+                        {
+                            Log.Info($"Change tracking not enabled in database {dbInfo.Name}, assuming version 0");
+                            currentVersion = 0;
+                        }
+                        else
+                            Log.Info($"Database {dbInfo.Name} is at version {currentVersion}");
                     }
                     else
+                    {
+                        currentVersion = db.ExecuteScalar<long>("select top(1) Version from SyncInfo");
                         Log.Info($"Database {dbInfo.Name} is at version {currentVersion}");
-                }
-                else
-                {
-                    currentVersion = db.ExecuteScalar<long>("select top(1) Version from SyncInfo");
-                    Log.Info($"Database {dbInfo.Name} is at version {currentVersion}");
-                }
+                    }
 
-                return currentVersion;
-            }
+                    return currentVersion;
+                }
 #pragma warning disable CA1031 // Do not catch general exception types
             catch (Exception ex)
             {
