@@ -351,17 +351,21 @@ namespace SyncChanges
         private void ReenableForeignKeyConstraint(Database db, ForeignKeyConstraint fk)
         {
             Log.Debug($"Re-enabling foreign key constraint {fk.ForeignKeyName}");
-            var sql = $"alter table {fk.TableName} with check check constraint {fk.ForeignKeyName}";
+            var sql = $"alter table {fk.TableName} with check check constraint [{fk.ForeignKeyName}]";
             if (!DryRun)
+            {
                 db.Execute(sql);
+            }
         }
 
         private void DisableForeignKeyConstraint(Database db, ForeignKeyConstraint fk)
         {
             Log.Debug($"Disabling foreign key constraint {fk.ForeignKeyName}");
-            var sql = $"alter table {fk.TableName} nocheck constraint {fk.ForeignKeyName}";
+            var sql = $"alter table {fk.TableName} nocheck constraint [{fk.ForeignKeyName}]";
             if (!DryRun)
+            {
                 db.Execute(sql);
+            }
         }
 
         private void SetSyncVersion(Database db, long currentVersion)
@@ -526,14 +530,18 @@ namespace SyncChanges
                     var insertSql = string.Format("insert into {0} ({1}) values ({2})", tableName,
                         string.Join(", ", insertColumnNames),
                         string.Join(", ", Parameters(insertColumnNames.Count)));
-                    if(table.HasIdentityColumn)
+                    if (table.HasIdentityColumn)
                     {
                         insertSql = $"set IDENTITY_INSERT {tableName} ON; {insertSql}; set IDENTITY_INSERT {tableName} OFF";
                     }
                     var insertValues = change.GetValues();
                     Log.Debug($"Executing insert: {insertSql} ({FormatArgs(insertValues)})");
+
                     if (!DryRun)
+                    {
                         db.Execute(insertSql, insertValues);
+                    }
+
                     break;
 
                 // Update
@@ -544,8 +552,12 @@ namespace SyncChanges
                         PrimaryKeys(change));
                     var updateValues = change.GetValues();
                     Log.Debug($"Executing update: {updateSql} ({FormatArgs(updateValues)})");
+
                     if (!DryRun)
+                    {
                         db.Execute(updateSql, updateValues);
+                    }
+
                     break;
 
                 // Delete
@@ -553,8 +565,12 @@ namespace SyncChanges
                     var deleteSql = string.Format("delete from {0} where {1}", tableName, PrimaryKeys(change));
                     var deleteValues = change.Keys.Values.ToArray();
                     Log.Debug($"Executing delete: {deleteSql} ({FormatArgs(deleteValues)})");
+
                     if (!DryRun)
+                    {
                         db.Execute(deleteSql, deleteValues);
+                    }
+
                     break;
             }
         }
