@@ -34,6 +34,9 @@
     <ProjectReference Include="..\SyncChanges\SyncChanges.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <None Update="northwind.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="config.example.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

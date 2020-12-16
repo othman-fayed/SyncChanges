@@ -8,6 +8,9 @@ namespace SyncChanges
         public string ColumnName { get; set; }
         public string ReferencedTableName { get; set; }
         public string ReferencedColumnName { get; set; }
+        /// <summary>
+        /// This is now qualified by brackets
+        /// </summary>
         public string ForeignKeyName { get; set; }
         public string FullName => TableName + ":" + ForeignKeyName;
 
