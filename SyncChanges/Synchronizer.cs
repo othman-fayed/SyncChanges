@@ -204,7 +204,8 @@ namespace SyncChanges
             {
                 using (var db = GetDatabase(dbInfo.ConnectionString, DatabaseType.SqlServer2008))
                 {
-                    var sql = @"select TableName, ColumnName, iif(max(cast(is_primary_key as tinyint)) = 1, 1, 0) PrimaryKey, iif(max(cast(is_identity as tinyint)) = 1, 1, 0) IdentityKey from
+                    //var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey from
+                    var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey, coalesce(max(cast(is_identity as tinyint)), 0) IdentityKey from
                         (
                         select ('[' + s.name + '].[' + t.name + ']') TableName, ('[' + COL_NAME(t.object_id, a.column_id) + ']') ColumnName,
                         i.is_primary_key, a.is_identity
