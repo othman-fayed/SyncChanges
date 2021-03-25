@@ -15,6 +15,8 @@ namespace SyncChanges
     /// </summary>
     public class Synchronizer
     {
+        bool allowRepopulate = true;
+
         /// <summary>
         /// Gets or sets a value indicating whether destination databases will be modified during a replication run.
         /// </summary>
@@ -123,11 +125,16 @@ namespace SyncChanges
 
             Log.Info($"Starting replication for replication set {replicationSet.Name}");
 
-            var destinationsByVersion = replicationSet.Destinations.GroupBy(d => GetCurrentVersion(d))
-                .Where(d => d.Key >= 0 && (sourceVersion < 0 || d.Key < sourceVersion)).ToList();
+            var destinationsByVersion = replicationSet
+                .Destinations
+                .GroupBy(d => GetCurrentVersion(d))
+                .Where(d => d.Key >= 0 && (sourceVersion < 0 || d.Key < sourceVersion))
+                .ToList();
 
             foreach (var destinations in destinationsByVersion)
+            {
                 Replicate(replicationSet.Source, destinations, tables);
+            }
 
             return !Error;
         }
@@ -162,7 +169,9 @@ namespace SyncChanges
                     try
                     {
                         using (var db = GetDatabase(replicationSet.Source.ConnectionString, DatabaseType.SqlServer2008))
+                        {
                             version = db.ExecuteScalar<long>("select CHANGE_TRACKING_CURRENT_VERSION()");
+                        }
 
                         Log.Debug($"Current version of source in replication set {replicationSet.Name} is {version}.");
 
@@ -229,7 +238,7 @@ namespace SyncChanges
                         {
                             Name = (string)g.Key,
                             KeyColumns = g.Where(c => (int)c.PrimaryKey > 0).Select(c => (string)c.ColumnName).ToList(),
-                        OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
+                            OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
                         HasIdentity = g.Any(c => (int)c.IsIdentity > 0)
                             OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
                             HasIdentityColumn = g.Any(c => (int)c.IdentityKey == 1)
@@ -443,7 +452,9 @@ namespace SyncChanges
                     db.BeginTransaction(System.Data.IsolationLevel.Snapshot);
                 }
                 else
+                {
                     Log.Info($"Snapshot isolation is not enabled in database {source.Name}, ignoring all changes above current version");
+                }
 
                 changeInfo.Version = db.ExecuteScalar<long>("select CHANGE_TRACKING_CURRENT_VERSION()");
                 Log.Info($"Current version of database {source.Name} is {changeInfo.Version}");
@@ -455,57 +466,121 @@ namespace SyncChanges
 
                     Log.Info($"Minimum version of table {tableName} in database {source.Name} is {minVersion}");
 
-                    if (minVersion > destinationVersion)
+                    if (minVersion > destinationVersion && !allowRepopulate)
                     {
                         Log.Error($"Cannot replicate table {tableName} to {"destination".ToQuantity(destinations.Count(), ShowQuantityAs.None)} {string.Join(", ", destinations.Select(d => d.Name))} because minimum source version {minVersion} is greater than destination version {destinationVersion}");
                         Error = true;
                         return null;
                     }
-
-                    var sql = $@"select c.SYS_CHANGE_OPERATION, c.SYS_CHANGE_VERSION, c.SYS_CHANGE_CREATION_VERSION,
-                        {string.Join(", ", table.KeyColumns.Select(c => "c." + c).Concat(table.OtherColumns.Select(c => "t." + c)))}
-                        from CHANGETABLE (CHANGES {tableName}, @0) c
-                        left outer join {tableName} t on ";
-                    sql += string.Join(" and ", table.KeyColumns.Select(k => $"c.{k} = t.{k}"));
-                    sql += " order by coalesce(c.SYS_CHANGE_CREATION_VERSION, c.SYS_CHANGE_VERSION)";
-
-                    Log.Debug($"Retrieving changes for table {tableName}: {sql}");
-
-                    db.OpenSharedConnection();
-                    var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql, destinationVersion);
-
-                    using var reader = cmd.ExecuteReader();
-                        var numChanges = 0;
-
-                        while (reader.Read())
+                    else if (minVersion > destinationVersion && allowRepopulate)
+                    {
+                        var change = new Change
                         {
-                            var col = 0;
-                            var change = new Change { Operation = ((string)reader[col])[0], Table = table };
-                            col++;
-                            var version = reader.GetInt64(col);
-                            change.Version = version;
-                            col++;
-                            var creationVersion = reader.IsDBNull(col) ? version : reader.GetInt64(col);
-                            change.CreationVersion = creationVersion;
-                            col++;
+                            Operation = 'Z',                    // Repopulate
+                            CreationVersion = int.MaxValue,     // Disable forign keys
+                            Table = table
+                        };
+                        changes.Add(change);
 
-                            if (!snapshotIsolationEnabled && Math.Min(version, creationVersion) > changeInfo.Version)
+                        var sql = $@"select {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
+                            from {tableName}";
+
+                        Log.Debug($"Retrieving changes for table {tableName}: {sql}");
+
+                        db.OpenSharedConnection();
+                        var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql);
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            var numChanges = 0;
+
+                            while (reader.Read())
                             {
-                                Log.Warn($"Ignoring change version {Math.Min(version, creationVersion)}");
-                                continue;
+                                var col = 0;
+                                change = new Change { Operation = 'I', Table = table };
+                                change.Version = changeInfo.Version;
+                                change.CreationVersion = int.MaxValue;
+                                //col++;
+
+                                //if (!snapshotIsolationEnabled && Math.Min(version, creationVersion) > changeInfo.Version)
+                                //{
+                                //    Log.Warn($"Ignoring change version {Math.Min(version, creationVersion)}");
+                                //    continue;
+                                //}
+
+                                for (int i = 0; i < table.KeyColumns.Count; i++, col++)
+                                {
+                                    change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
+                                }
+
+                                for (int i = 0; i < table.OtherColumns.Count; i++, col++)
+                                {
+                                    change.Others[table.OtherColumns[i]] = reader.GetValue(col);
+                                }
+
+                                changes.Add(change);
+                                numChanges++;
                             }
 
-                            for (int i = 0; i < table.KeyColumns.Count; i++, col++)
-                                change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
-                            for (int i = 0; i < table.OtherColumns.Count; i++, col++)
-                                change.Others[table.OtherColumns[i]] = reader.GetValue(col);
-
-                            changes.Add(change);
-                            numChanges++;
+                            Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
                         }
 
-                        Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
+                        changes.Add(change);
+                        Log.Info($"Table {tableName} has to be repopulated");
                     }
+                    else
+                    {
+                        var sql = $@"select c.SYS_CHANGE_OPERATION, c.SYS_CHANGE_VERSION, c.SYS_CHANGE_CREATION_VERSION,
+                            {string.Join(", ", table.KeyColumns.Select(c => "c." + c).Concat(table.OtherColumns.Select(c => "t." + c)))}
+                            from CHANGETABLE (CHANGES {tableName}, @0) c
+                            left outer join {tableName} t on ";
+                        sql += string.Join(" and ", table.KeyColumns.Select(k => $"c.{k} = t.{k}"));
+                        sql += " order by coalesce(c.SYS_CHANGE_CREATION_VERSION, c.SYS_CHANGE_VERSION)";
+
+                        Log.Debug($"Retrieving changes for table {tableName}: {sql}");
+
+                        db.OpenSharedConnection();
+                        var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql, destinationVersion);
+
+                    using var reader = cmd.ExecuteReader();
+                            var numChanges = 0;
+
+                            while (reader.Read())
+                            {
+                                var col = 0;
+                                var change = new Change { Operation = ((string)reader[col])[0], Table = table };
+                                col++;
+                                var version = reader.GetInt64(col);
+                                change.Version = version;
+                                col++;
+                                var creationVersion = reader.IsDBNull(col) ? version : reader.GetInt64(col);
+                                change.CreationVersion = creationVersion;
+                                col++;
+
+                                if (!snapshotIsolationEnabled && Math.Min(version, creationVersion) > changeInfo.Version)
+                                {
+                                    Log.Warn($"Ignoring change version {Math.Min(version, creationVersion)}");
+                                    continue;
+                                }
+
+                                for (int i = 0; i < table.KeyColumns.Count; i++, col++)
+                                {
+                                    change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
+                                }
+
+                                for (int i = 0; i < table.OtherColumns.Count; i++, col++)
+                                {
+                                    change.Others[table.OtherColumns[i]] = reader.GetValue(col);
+                                }
+
+                                changes.Add(change);
+                                numChanges++;
+                            }
+
+                            Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
+                        }
+
+                }
 
                 if (snapshotIsolationEnabled)
                     db.CompleteTransaction();
@@ -532,6 +607,7 @@ namespace SyncChanges
                         var intermediateChange = changes[j];
                         if (intermediateChange.CreationVersion > change.Version) // created later than last update to change
                             break;
+
                         if (intermediateChange.Operation != 'I') continue;
 
                         // let's look at intermediateChange if it collides with change
@@ -557,8 +633,24 @@ namespace SyncChanges
             var tableName = table.Name;
             var operation = change.Operation;
 
+            if (operation == 'Z')
+            {
+                var deleteAllSql = string.Format("delete from {0}", tableName);
+                Log.Debug($"Executing delete all: {deleteAllSql} ");
+
+                if (!DryRun)
+                {
+                    db.Execute(deleteAllSql);
+                }
+
+                operation = 'I';
+            }
+
             switch (operation)
             {
+                // Repopulate
+
+
                 // Insert
                 case 'I':
                     var insertColumnNames = change.GetColumnNames();
@@ -567,10 +659,13 @@ namespace SyncChanges
                     //    string.Join(", ", insertColumnNames),
                     //    string.Join(", ", Parameters(insertColumnNames.Count))) +
                     //    $"set IDENTITY_INSERT {tableName} OFF";
-                    var insertSql = string.Format("insert into {0} ({1}) values ({2})", tableName,
+
+                    var insertSql = string.Format("insert into {0} ({1}) values ({2})",
+                        tableName,
                     var insertSql = string.Format("insert into {0} ({1}) values ({2})", tableName,
                         string.Join(", ", insertColumnNames),
                         string.Join(", ", Parameters(insertColumnNames.Count)));
+
                     if (table.HasIdentityColumn)
                     {
                         insertSql = $"set IDENTITY_INSERT {tableName} ON; {insertSql}; set IDENTITY_INSERT {tableName} OFF";

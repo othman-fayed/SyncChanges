@@ -1,0 +1,17 @@
+{
+  "ReplicationSets": [
+    {
+      "Name": "Dev",
+      "Source": {
+        "Name": "Primary",
+        "ConnectionString": "Data Source=.;Initial Catalog=ChangeTracking;Integrated Security=true;MultipleActiveResultSets=True"
+      },
+      "Destinations": [
+        {
+          "Name": "Secondary 1",
+          "ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True"
+        }
+      ]
+    }
+  ]
+}
