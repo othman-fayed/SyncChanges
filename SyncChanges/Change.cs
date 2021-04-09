@@ -16,6 +16,7 @@ namespace SyncChanges
         public object[] GetValues() => Keys.Values.Concat(Others.Values).ToArray();
 
         public List<string> GetColumnNames() => Keys.Keys.Concat(Others.Keys).ToList();
+        public List<Change> SubChanges { get; private set; } = new List<Change>();
 
         public object GetValue(string columnName)
         {
@@ -23,5 +24,6 @@ namespace SyncChanges
                 return null;
             return o;
         }
+
     }
 }
