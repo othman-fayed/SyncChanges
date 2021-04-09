@@ -338,7 +338,21 @@ namespace SyncChanges
 
                         try
                         {
-                            var changes = changeInfo.Changes;
+                            var flushChanges = changeInfo.Changes.Where(x => x.Operation == 'Z').ToList();
+
+                            if (flushChanges.Any())
+                            {
+                                DisableAllConstraints(db);
+
+                                foreach (var flushChange in flushChanges)
+                                {
+                                    FlushTable(db, flushChange);
+                                }
+
+                                EnableAllConstraints(db);
+                            }
+
+                            var changes = changeInfo.Changes.Except(flushChanges).ToList();
                             var disabledForeignKeyConstraints = new Dictionary<ForeignKeyConstraint, long>();
 
                             for (int i = 0; i < changes.Count; i++)
@@ -403,6 +417,30 @@ namespace SyncChanges
         {
             Log.Debug($"Re-enabling foreign key constraint {fk.ForeignKeyName}");
             var sql = $"alter table {fk.TableName} with check check constraint [{fk.ForeignKeyName}]";
+            if (!DryRun)
+            {
+                db.Execute(sql);
+            }
+        }
+
+        private void DisableAllConstraints(Database db)
+        {
+            //--Disable all constraints for database
+            //EXEC sp_msforeachtable "ALTER TABLE ? NOCHECK CONSTRAINT all"
+            Log.Debug($"Disabling all constraints for database");
+            var sql = "EXEC sp_msforeachtable \"ALTER TABLE ? NOCHECK CONSTRAINT all\"";
+            if (!DryRun)
+            {
+                db.Execute(sql);
+            }
+        }
+        private void EnableAllConstraints(Database db)
+        {
+            //-- Enable all constraints for database
+            //EXEC sp_msforeachtable "ALTER TABLE ? WITH CHECK CHECK CONSTRAINT all"
+
+            Log.Debug($"Enable all constraints for database");
+            var sql = "EXEC sp_msforeachtable \"ALTER TABLE ? WITH CHECK CHECK CONSTRAINT all\"";
             if (!DryRun)
             {
                 db.Execute(sql);
@@ -474,17 +512,15 @@ namespace SyncChanges
                     }
                     else if (minVersion > destinationVersion && allowRepopulate)
                     {
-                        var change = new Change
+                        // Add table to flush list since the table contains data
+                        var flushChange = new Change
                         {
                             Operation = 'Z',                    // Repopulate
                             CreationVersion = int.MaxValue,     // Disable forign keys
                             Table = table
                         };
-                        changes.Add(change);
-
                         var sql = $@"select {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
                             from {tableName}";
-
                         Log.Debug($"Retrieving changes for table {tableName}: {sql}");
 
                         db.OpenSharedConnection();
@@ -497,16 +533,9 @@ namespace SyncChanges
                             while (reader.Read())
                             {
                                 var col = 0;
-                                change = new Change { Operation = 'I', Table = table };
+                                var change = new Change { Operation = 'I', Table = table };
                                 change.Version = changeInfo.Version;
                                 change.CreationVersion = int.MaxValue;
-                                //col++;
-
-                                //if (!snapshotIsolationEnabled && Math.Min(version, creationVersion) > changeInfo.Version)
-                                //{
-                                //    Log.Warn($"Ignoring change version {Math.Min(version, creationVersion)}");
-                                //    continue;
-                                //}
 
                                 for (int i = 0; i < table.KeyColumns.Count; i++, col++)
                                 {
@@ -518,14 +547,14 @@ namespace SyncChanges
                                     change.Others[table.OtherColumns[i]] = reader.GetValue(col);
                                 }
 
-                                changes.Add(change);
+                                flushChange.SubChanges.Add(change);
                                 numChanges++;
                             }
 
                             Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
                         }
 
-                        changes.Add(change);
+                        changes.Add(flushChange);
                         Log.Info($"Table {tableName} has to be repopulated");
                     }
                     else
@@ -600,7 +629,7 @@ namespace SyncChanges
             for (int i = 0; i < changes.Count; i++)
             {
                 var change = changes[i];
-                if (change.CreationVersion < change.Version) // was inserted then later updated
+                if (change.CreationVersion < change.Version || change.Operation == 'Z') // was inserted then later updated
                 {
                     for (int j = i + 1; j < changes.Count; j++)
                     {
@@ -608,7 +637,10 @@ namespace SyncChanges
                         if (intermediateChange.CreationVersion > change.Version) // created later than last update to change
                             break;
 
-                        if (intermediateChange.Operation != 'I') continue;
+                        if (intermediateChange.Operation != 'I' && intermediateChange.Operation != 'Z')
+                        {
+                            continue;
+                        }
 
                         // let's look at intermediateChange if it collides with change
                         foreach (var fk in change.Table.ForeignKeyConstraints.Where(f => f.ReferencedTableName == intermediateChange.Table.Name))
@@ -633,23 +665,18 @@ namespace SyncChanges
             var tableName = table.Name;
             var operation = change.Operation;
 
-            if (operation == 'Z')
-            {
-                var deleteAllSql = string.Format("delete from {0}", tableName);
-                Log.Debug($"Executing delete all: {deleteAllSql} ");
-
-                if (!DryRun)
-                {
-                    db.Execute(deleteAllSql);
-                }
-
-                operation = 'I';
-            }
-
             switch (operation)
             {
-                // Repopulate
+                //// Repopulate
+                //case 'Z':
+                //    var deleteAllSql = string.Format("delete from {0}", tableName);
+                //    Log.Debug($"Executing delete all: {deleteAllSql} ");
 
+                //    if (!DryRun)
+                //    {
+                //        db.Execute(deleteAllSql);
+                //    }
+                //    break;
 
                 // Insert
                 case 'I':
@@ -711,6 +738,65 @@ namespace SyncChanges
                     }
 
                     break;
+            }
+        }
+
+        private void FlushTable(Database db, Change flushChange)
+        {
+            var table = flushChange.Table;
+            var tableName = table.Name;
+
+            var deleteAllSql = string.Format("delete from {0}", tableName);
+            Log.Debug($"Executing delete all: {deleteAllSql} ");
+
+            if (!DryRun)
+            {
+                db.Execute(deleteAllSql);
+            }
+
+            if (table.HasIdentityColumn)
+            {
+                var insertSql = $"set IDENTITY_INSERT {tableName} ON;";
+                Log.Debug($"IDENTITY INSERT ON: {insertSql}");
+
+                if (!DryRun)
+                {
+                    db.Execute(insertSql);
+                }
+            }
+
+            foreach (var change in flushChange.SubChanges)
+            {
+                var insertColumnNames = change.GetColumnNames();
+                //var insertSql = $"set IDENTITY_INSERT {tableName} ON; " +
+                //    string.Format("insert into {0} ({1}) values ({2}); ", tableName,
+                //    string.Join(", ", insertColumnNames),
+                //    string.Join(", ", Parameters(insertColumnNames.Count))) +
+                //    $"set IDENTITY_INSERT {tableName} OFF";
+
+                var insertSql = string.Format("insert into {0} ({1}) values ({2})",
+                    tableName,
+                    string.Join(", ", insertColumnNames),
+                    string.Join(", ", Parameters(insertColumnNames.Count)));
+
+                var insertValues = change.GetValues();
+                Log.Debug($"Executing insert: {insertSql} ({FormatArgs(insertValues)})");
+
+                if (!DryRun)
+                {
+                    db.Execute(insertSql, insertValues);
+                }
+            }
+
+            if (table.HasIdentityColumn)
+            {
+                var insertSql = $"set IDENTITY_INSERT {tableName} OFF;";
+                Log.Debug($"IDENTITY INSERT OFF: {insertSql}");
+
+                if (!DryRun)
+                {
+                    db.Execute(insertSql);
+                }
             }
         }
 
