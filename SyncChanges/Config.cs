@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -11,6 +12,7 @@ namespace SyncChanges
     /// </summary>
     public class Config
     {
+
         /// <summary>
         /// Gets the replication sets.
         /// </summary>
@@ -56,6 +58,7 @@ namespace SyncChanges
         /// The tables to be replicated.
         /// </value>
         public List<string> Tables { get; set; } = new List<string>();
+
     }
 
     /// <summary>
@@ -78,5 +81,50 @@ namespace SyncChanges
         /// The connection string.
         /// </value>
         public string ConnectionString { get; set; }
+
+        /// <summary>
+        /// Batch size in migration
+        /// </summary>
+        public int? BatchSize { get; set; }
+
+        /// <summary>
+        /// If out of sync db was met, should we populate it?
+        /// </summary>
+        public bool PopulateOutOfSync { get; set; } = false;
+
+        /// <summary>
+        /// Defaults to Slave. Mode of replica db tell us how to treat it
+        /// </summary>
+        public ReplicaDatabaseMode Mode { get; set; } = ReplicaDatabaseMode.Slave;
+
+        /// <summary>
+        /// Table mapping
+        /// </summary>
+        public IList<TableMapping> TableMapping { get; set; } = new List<TableMapping>();
+
+        /// <summary>
+        /// Adds a row version column to be used by SyncChanges
+        /// </summary>
+        public bool AddRowVersionColumn { get; set; } = true;
+
+        /// <summary>
+        /// Row version name
+        /// </summary>
+        public string RowVersionColumnName { get; set; } = "Sync_RowVersion";
+    }
+
+    /// <summary>
+    /// Replica database mode
+    /// </summary>
+    public enum ReplicaDatabaseMode
+    {
+        /// <summary>
+        /// We can't flush the data in the case of live db
+        /// </summary>
+        Normal,
+        /// <summary>
+        /// Replica only database
+        /// </summary>
+        Slave
     }
 }

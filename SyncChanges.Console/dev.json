@@ -11,7 +11,11 @@
         {
           "Name": "Secondary 1",
           "ConnectionString": "Data Source=.;Initial Catalog=AviMallEsfs_Replica;Integrated Security=true;MultipleActiveResultSets=True",
-          "_ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True"
+          "_ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True",
+          "AddRowVersionColumn": true,
+          "Mode": "Slave",
+          "PopulateOutOfSync": true
+
         }
       ]
     }
