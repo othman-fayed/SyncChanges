@@ -4,13 +4,13 @@
       "Name": "Dev",
       "Source": {
         "Name": "Primary",
-        "ConnectionString": "Data Source=.;Initial Catalog=AviMallEsfs;Integrated Security=true;MultipleActiveResultSets=True",
+        "ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019;Integrated Security=true;MultipleActiveResultSets=True",
         "_ConnectionString": "Data Source=.;Initial Catalog=ChangeTracking;Integrated Security=true;MultipleActiveResultSets=True"
       },
       "Destinations": [
         {
           "Name": "Secondary 1",
-          "ConnectionString": "Data Source=.;Initial Catalog=AviMallEsfs_Replica;Integrated Security=true;MultipleActiveResultSets=True",
+          "ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019Replicated;Integrated Security=true;MultipleActiveResultSets=True",
           "_ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True",
           "AddRowVersionColumn": true,
           "Mode": "Slave",
