@@ -29,7 +29,7 @@ namespace SyncChanges.Console
                 System.Console.OutputEncoding = Encoding.UTF8;
                 var program = new Program();
                 var showHelp = false;
-
+                
                 try
                 {
                     var options = new OptionSet {
