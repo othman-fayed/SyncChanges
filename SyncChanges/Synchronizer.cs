@@ -328,6 +328,8 @@ namespace SyncChanges
 
                             if (flushChanges.Any())
                             {
+                                Log.Debug($"Flushing changes for tables: {string.Join(",", flushChanges.Select(x => x.Table))})");
+
                                 DisableAllConstraints(db);
 
                                 foreach (var flushChange in flushChanges)
@@ -363,13 +365,23 @@ namespace SyncChanges
 
                                 PerformChange(db, change);
 
-                                if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
+                                //if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
+                                //{
+                                //    foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
+                                //    {
+                                //        ReenableForeignKeyConstraint(db, fk);
+                                //        disabledForeignKeyConstraints.Remove(fk);
+                                //    }
+                                //}
+                            }
+
+                            if (disabledForeignKeyConstraints.Any())
+                            {
+                                Log.Debug($"Renabling all disabled foreign keys");
+                                foreach (var fk in disabledForeignKeyConstraints.Keys)
                                 {
-                                    foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
-                                    {
-                                        ReenableForeignKeyConstraint(db, fk);
-                                        disabledForeignKeyConstraints.Remove(fk);
-                                    }
+                                    ReenableForeignKeyConstraint(db, fk);
+                                    disabledForeignKeyConstraints.Remove(fk);
                                 }
                             }
 
