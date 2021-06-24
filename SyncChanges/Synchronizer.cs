@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Resources;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 
@@ -15,8 +16,6 @@ namespace SyncChanges
     /// </summary>
     public class Synchronizer
     {
-        bool allowRepopulate = true;
-
         /// <summary>
         /// Gets or sets a value indicating whether destination databases will be modified during a replication run.
         /// </summary>
@@ -61,6 +60,8 @@ namespace SyncChanges
         }
 
         private IList<IList<TableInfo>> Tables { get; } = new List<IList<TableInfo>>();
+        public SyncSession CurrentSession { get; private set; }
+
         private bool Initialized = false;
 
         /// <summary>
@@ -79,9 +80,11 @@ namespace SyncChanges
 
                 var tables = GetTables(replicationSet.Source);
                 if (replicationSet.Tables != null && replicationSet.Tables.Any())
+                {
                     tables = tables.Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
                         .Where(t => replicationSet.Tables.Any(r => r == t.Name || r == t.Name.Split('.')[1]))
                         .Select(t => t.Table).ToList();
+                }
 
                 if (!tables.Any())
                     Log.Warn("No tables to replicate (check if change tracking is enabled)");
@@ -90,6 +93,8 @@ namespace SyncChanges
 
                 Tables.Add(tables);
             }
+
+            this.CurrentSession = SyncSession.LoadSessionFromFile();
 
             Initialized = true;
         }
@@ -104,13 +109,26 @@ namespace SyncChanges
 
             if (!Initialized) Init();
 
-            for (int i = 0; i < Config.ReplicationSets.Count; i++)
+            var startIndex = 0;
+            if (CurrentSession.InProgress == true)
+            {
+                startIndex = Config.ReplicationSets.FindIndex(x => x.Name == CurrentSession.DestinationName);
+                if (startIndex == -1)
+                {
+                    startIndex = 0;
+                }
+            }
+
+            for (int i = startIndex; i < Config.ReplicationSets.Count; i++)
             {
                 var replicationSet = Config.ReplicationSets[i];
                 var tables = Tables[i];
+                CurrentSession.DestinationName = replicationSet.Name;
 
                 Sync(replicationSet, tables);
             }
+
+            CurrentSession = new SyncSession();
 
             Log.Info($"Finished replication {(Error ? "with" : "without")} errors");
 
@@ -288,6 +306,12 @@ namespace SyncChanges
             var changeInfo = RetrieveChanges(source, destinations, tables);
             if (changeInfo == null) return;
 
+            if (changeInfo.OutOfSyncDatabases.Any())
+            {
+                // We shall loop the out of sync databases and populate per table
+                // Loop over table to populate databases.
+            }
+
             // replicate changes to destinations
             foreach (var destination in destinations)
             {
@@ -463,59 +487,43 @@ namespace SyncChanges
 
                     Log.Info($"Minimum version of table {tableName} in database {source.Name} is {minVersion}");
 
-                    if (minVersion > destinationVersion && !allowRepopulate)
+                    if (minVersion > destinationVersion)
                     {
+                        changeInfo.OutOfSyncVersions.Add(destinationVersion);
+
+                        foreach (var databseInfo in destinations)
+                        {
+                            if (databseInfo.PopulateOutOfSync)
+                            {
+                                changeInfo.OutOfSyncDatabases.Add(databseInfo);
+                            }
+                        }
+
+                        if (changeInfo.OutOfSyncDatabases.Any())
+                        {
+                            return changeInfo;
+                        }
+
                         Log.Error($"Cannot replicate table {tableName} to {"destination".ToQuantity(destinations.Count(), ShowQuantityAs.None)} {string.Join(", ", destinations.Select(d => d.Name))} because minimum source version {minVersion} is greater than destination version {destinationVersion}");
                         Error = true;
                         return null;
                     }
-                    else if (minVersion > destinationVersion && allowRepopulate)
-                    {
-                        // Add table to flush list since the table contains data
-                        var flushChange = new Change
-                        {
-                            Operation = 'Z',                    // Repopulate
-                            CreationVersion = int.MaxValue,     // Disable forign keys
-                            Table = table
-                        };
-                        var sql = $@"select {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
-                            from {tableName}";
-                        Log.Debug($"Retrieving changes for table {tableName}: {sql}");
+                    //else if (minVersion > destinationVersion && allowRepopulate)
+                    //{
+                    //    changeInfo.OutOfSyncVersions.Add(destinationVersion);
 
-                        db.OpenSharedConnection();
-                        var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql);
+                    //    //// Add table to flush list since the table contains data
+                    //    //var flushChange = new Change
+                    //    //{
+                    //    //    Operation = 'Z',                    // Repopulate
+                    //    //    CreationVersion = int.MaxValue,     // Disable forign keys
+                    //    //    Table = table
+                    //    //};
+                    //    //changes.Add(flushChange);
+                    //    //Log.Info($"Table {tableName} has to be repopulated");
 
-                        using (var reader = cmd.ExecuteReader())
-                        {
-                            var numChanges = 0;
-
-                            while (reader.Read())
-                            {
-                                var col = 0;
-                                var change = new Change { Operation = 'I', Table = table };
-                                change.Version = changeInfo.Version;
-                                change.CreationVersion = int.MaxValue;
-
-                                for (int i = 0; i < table.KeyColumns.Count; i++, col++)
-                                {
-                                    change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
-                                }
-
-                                for (int i = 0; i < table.OtherColumns.Count; i++, col++)
-                                {
-                                    change.Others[table.OtherColumns[i]] = reader.GetValue(col);
-                                }
-
-                                flushChange.SubChanges.Add(change);
-                                numChanges++;
-                            }
-
-                            Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
-                        }
-
-                        changes.Add(flushChange);
-                        Log.Info($"Table {tableName} has to be repopulated");
-                    }
+                    //    //flushChange.SubChanges = GetAllData(db, table, changeInfo.Version);
+                    //}
                     else
                     {
                         var sql = $@"select c.SYS_CHANGE_OPERATION, c.SYS_CHANGE_VERSION, c.SYS_CHANGE_CREATION_VERSION,
@@ -581,6 +589,50 @@ namespace SyncChanges
             ComputeForeignKeyConstraintsToDisable(changeInfo);
 
             return changeInfo;
+        }
+
+        private List<Change> GetAllData(Database db, TableInfo table, long version)
+        {
+            var changes = new List<Change>();
+            string tableName = table.Name;
+
+
+            var sql = $@"select {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
+                            from {tableName}";
+            Log.Debug($"Retrieving changes for table {tableName}: {sql}");
+
+            db.OpenSharedConnection();
+            var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql);
+
+            using (var reader = cmd.ExecuteReader())
+            {
+                var numChanges = 0;
+
+                while (reader.Read())
+                {
+                    var col = 0;
+                    var change = new Change { Operation = 'I', Table = table };
+                    change.Version = version;
+                    change.CreationVersion = int.MaxValue;
+
+                    for (int i = 0; i < table.KeyColumns.Count; i++, col++)
+                    {
+                        change.Keys[table.KeyColumns[i]] = reader.GetValue(col);
+                    }
+
+                    for (int i = 0; i < table.OtherColumns.Count; i++, col++)
+                    {
+                        change.Others[table.OtherColumns[i]] = reader.GetValue(col);
+                    }
+
+                    changes.Add(change);
+                    numChanges++;
+                }
+
+                Log.Info($"Table {tableName} has {"change".ToQuantity(numChanges)}");
+            }
+
+            return changes;
         }
 
         private void ComputeForeignKeyConstraintsToDisable(ChangeInfo changeInfo)
