@@ -378,7 +378,7 @@ namespace SyncChanges
                             if (disabledForeignKeyConstraints.Any())
                             {
                                 Log.Debug($"Renabling all disabled foreign keys");
-                                foreach (var fk in disabledForeignKeyConstraints.Keys)
+                                foreach (var fk in disabledForeignKeyConstraints.Keys.ToList())
                                 {
                                     ReenableForeignKeyConstraint(db, fk);
                                     disabledForeignKeyConstraints.Remove(fk);
