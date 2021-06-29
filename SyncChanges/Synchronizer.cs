@@ -1,9 +1,11 @@
 ﻿using Humanizer;
 using NLog;
 using NPoco;
+using NPoco.fastJSON;
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
+using System.Data.SqlClient;
 using System.Linq;
 using System.Resources;
 using System.Security.Cryptography.X509Certificates;
@@ -315,13 +317,27 @@ namespace SyncChanges
             // replicate changes to destinations
             foreach (var destination in destinations)
             {
+                void ExceptionCaught(Exception exception)
+                {
+                    Error = true;
+                    Log.Error(exception, $"Error replicating changes to destination {destination.Name}");
+
+                    // foreign key error
+                    if (exception is SqlException sqlException && sqlException.Number == 547)
+                    {
+                        Log.Info("Enable DisableAllConstraints on destination {0} due to foreign key error", destination.Name);
+                        destination.DisableAllConstraints = true;
+                    }
+                }
+
                 try
                 {
                     Log.Info($"Replicating {"change".ToQuantity(changeInfo.Changes.Count)} to destination {destination.Name}");
 
                     using (var db = GetDatabase(destination.ConnectionString, DatabaseType.SqlServer2005))
-                    using (var transaction = db.GetTransaction(System.Data.IsolationLevel.ReadUncommitted))
+                    using (var transaction = db.GetTransaction(System.Data.IsolationLevel.ReadUncommitted))     // TODO: Consider locking the tables in case we disable all constaints
                     {
+                        // Another try is used here assumingly to Dispose correctly
                         try
                         {
                             var flushChanges = changeInfo.Changes.Where(x => x.Operation == 'Z').ToList();
@@ -343,39 +359,51 @@ namespace SyncChanges
                             var changes = changeInfo.Changes.Except(flushChanges).ToList();
                             var disabledForeignKeyConstraints = new Dictionary<ForeignKeyConstraint, long>();
 
+                            if (destination.DisableAllConstraints == true)
+                            {
+                                DisableAllConstraints(db);
+                            }
+
                             for (int i = 0; i < changes.Count; i++)
                             {
                                 var change = changes[i];
                                 Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion})");
 
-                                foreach (var fk in change.ForeignKeyConstraintsToDisable)
+                                if (destination.DisableAllConstraints != true)
                                 {
-                                    if (disabledForeignKeyConstraints.TryGetValue(fk.Key, out long untilVersion))
+                                    foreach (var fk in change.ForeignKeyConstraintsToDisable)
                                     {
-                                        // FK is already disabled, check if it needs to be deferred further than currently planned
-                                        if (fk.Value > untilVersion)
+                                        if (disabledForeignKeyConstraints.TryGetValue(fk.Key, out long untilVersion))
+                                        {
+                                            // FK is already disabled, check if it needs to be deferred further than currently planned
+                                            if (fk.Value > untilVersion)
+                                                disabledForeignKeyConstraints[fk.Key] = fk.Value;
+                                        }
+                                        else
+                                        {
+                                            DisableForeignKeyConstraint(db, fk.Key);
                                             disabledForeignKeyConstraints[fk.Key] = fk.Value;
-                                    }
-                                    else
-                                    {
-                                        DisableForeignKeyConstraint(db, fk.Key);
-                                        disabledForeignKeyConstraints[fk.Key] = fk.Value;
+                                        }
                                     }
                                 }
 
                                 PerformChange(db, change);
 
-                                //if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
-                                //{
-                                //    foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
-                                //    {
-                                //        ReenableForeignKeyConstraint(db, fk);
-                                //        disabledForeignKeyConstraints.Remove(fk);
-                                //    }
-                                //}
+                                if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
+                                {
+                                    foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
+                                    {
+                                        ReenableForeignKeyConstraint(db, fk);
+                                        disabledForeignKeyConstraints.Remove(fk);
+                                    }
+                                }
                             }
 
-                            if (disabledForeignKeyConstraints.Any())
+                            if (destination.DisableAllConstraints == true)
+                            {
+                                EnableAllConstraints(db);
+                            }
+                            else if (disabledForeignKeyConstraints.Any())
                             {
                                 Log.Debug($"Renabling all disabled foreign keys");
                                 foreach (var fk in disabledForeignKeyConstraints.Keys.ToList())
@@ -392,18 +420,23 @@ namespace SyncChanges
                             }
 
                             Log.Info($"Destination {destination.Name} now at version {changeInfo.Version}");
+
+                            // reset DisableAllConstraints after successful run
+                            if (destination.DisableAllConstraints == true)
+                            {
+                                Log.Info("Reset DisableAllConstraints on destination {0} ", destination.Name);
+                                destination.DisableAllConstraints = null;
+                            }
                         }
                         catch (Exception ex)
                         {
-                            Error = true;
-                            Log.Error(ex, $"Error replicating changes to destination {destination.Name}");
+                            ExceptionCaught(ex);
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    Error = true;
-                    Log.Error(ex, $"Error replicating changes to destination {destination.Name}");
+                    ExceptionCaught(ex);
                 }
             }
         }
@@ -422,7 +455,7 @@ namespace SyncChanges
         {
             //--Disable all constraints for database
             //EXEC sp_msforeachtable "ALTER TABLE ? NOCHECK CONSTRAINT all"
-            Log.Debug($"Disabling all constraints for database");
+            Log.Debug("Disabling all constraints for database");
             var sql = "EXEC sp_msforeachtable \"ALTER TABLE ? NOCHECK CONSTRAINT all\"";
             if (!DryRun)
             {
@@ -682,6 +715,11 @@ namespace SyncChanges
                     }
                 }
             }
+
+            Log.Debug(messageFunc: () =>
+            {
+                return "Computed foreign key for the changes " + JSON.ToJSON(changeInfo);
+            });
         }
 
         private void PerformChange(Database db, Change change)

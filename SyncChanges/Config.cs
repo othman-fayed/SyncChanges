@@ -58,7 +58,6 @@ namespace SyncChanges
         /// The tables to be replicated.
         /// </value>
         public List<string> Tables { get; set; } = new List<string>();
-
     }
 
     /// <summary>
@@ -111,6 +110,11 @@ namespace SyncChanges
         /// Row version name
         /// </summary>
         public string RowVersionColumnName { get; set; } = "Sync_RowVersion";
+
+        /// <summary>
+        /// Set true to disable all constraints when inserting into database
+        /// </summary>
+        public bool? DisableAllConstraints { get; set; }
     }
 
     /// <summary>
