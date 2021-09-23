@@ -5,13 +5,14 @@
       "Source": {
         "Name": "Primary",
         "_ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019;Integrated Security=true;MultipleActiveResultSets=True",
-        "ConnectionString": "Data Source=.;Initial Catalog=ChangeTracking;Integrated Security=true;MultipleActiveResultSets=True"
+        "ConnectionString": "Data Source=webserver;Initial Catalog=AviMallEsfs;User Id=sa;Password=sa123!@#;MultipleActiveResultSets=True; Timeout=60"
       },
       "Destinations": [
         {
           "Name": "Secondary 1",
           "_ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019Replicated;Integrated Security=true;MultipleActiveResultSets=True",
-          "ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True",
+          "__ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True",
+          "ConnectionString": "Data Source=192.168.10.5\\SqlExpress;Initial Catalog=Esfs_Live_Replica;User Id=sa;Password=sa123!@#;MultipleActiveResultSets=True;",
           "AddRowVersionColumn": true,
           "Mode": "Slave",
           "PopulateOutOfSync": true

@@ -47,6 +47,8 @@ namespace SyncChanges
         /// </summary>
         public event EventHandler<SyncEventArgs> Synced;
 
+        public SyncSession CurrentSession { get; private set; }
+
         static readonly Logger Log = LogManager.GetCurrentClassLogger();
         Config Config { get; set; }
         bool Error { get; set; }
@@ -62,7 +64,6 @@ namespace SyncChanges
         }
 
         private IList<IList<TableInfo>> Tables { get; } = new List<IList<TableInfo>>();
-        public SyncSession CurrentSession { get; private set; }
 
         private bool Initialized = false;
 
@@ -72,7 +73,9 @@ namespace SyncChanges
         public void Init()
         {
             if (Timeout != 0)
+            {
                 Log.Info($"Command timeout is {"second".ToQuantity(Timeout)}");
+            }
 
             for (int i = 0; i < Config.ReplicationSets.Count; i++)
             {
@@ -83,9 +86,11 @@ namespace SyncChanges
                 var tables = GetTables(replicationSet.Source);
                 if (replicationSet.Tables != null && replicationSet.Tables.Any())
                 {
-                    tables = tables.Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
+                    tables = tables
+                        .Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
                         .Where(t => replicationSet.Tables.Any(r => r == t.Name || r == t.Name.Split('.')[1]))
-                        .Select(t => t.Table).ToList();
+                        .Select(t => t.Table)
+                        .ToList();
                 }
 
                 if (!tables.Any())
@@ -353,9 +358,15 @@ namespace SyncChanges
             }
 
             // replicate changes to destinations
-            foreach (var destination in destinations)
+            var databases = destinations.ToList();
+            for (var i = 0; i < databases.Count; i++)
             {
-                void ExceptionCaught(Exception exception)
+                var destination = databases[i];
+                try
+                {
+                    ReplicateChanges(changeInfo, destination);
+                }
+                catch (Exception exception)
                 {
                     Error = true;
                     Log.Error(exception, $"Error replicating changes to destination {destination.Name}");
@@ -363,113 +374,120 @@ namespace SyncChanges
                     // foreign key error
                     if (exception is SqlException sqlException && sqlException.Number == 547)
                     {
-                        Log.Info("Enable DisableAllConstraints on destination {0} due to foreign key error", destination.Name);
-                        destination.DisableAllConstraints = true;
+                        if (destination.IsTemporaryDisableAllConstraints())
+                        {
+                            destination.TemporaryDisableAllConstraints(false);
+                        }
+                        else if (destination.DisableAllConstraints != true)
+                        {
+                            Log.Info("Enable DisableAllConstraints on destination {0} due to foreign key error", destination.Name);
+                            destination.TemporaryDisableAllConstraints();
+                            i--;
+                        }
                     }
                 }
+            }
+        }
 
-                try
-                {
-                    Log.Info($"Replicating {"change".ToQuantity(changeInfo.Changes.Count)} to destination {destination.Name}");
+        private void ReplicateChanges(ChangeInfo changeInfo, DatabaseInfo destination)
+        {
+            Log.Info($"Replicating {"change".ToQuantity(changeInfo.Changes.Count)} to destination {destination.Name}");
 
                     using var db = GetDatabase(destination.ConnectionString, DatabaseType.SqlServer2005);
                     using var transaction = db.GetTransaction(System.Data.IsolationLevel.ReadUncommitted);
 
-                        // Another try is used here assumingly to Dispose correctly
-                        try
+                // Another try is used here assumingly to Dispose correctly
+                //try
+                //{
+                var flushChanges = changeInfo.Changes.Where(x => x.Operation == 'Z').ToList();
+
+                if (flushChanges.Any())
+                {
+                    Log.Debug($"Flushing changes for tables: {string.Join(",", flushChanges.Select(x => x.Table))})");
+
+                    DisableAllConstraints(db);
+
+                    foreach (var flushChange in flushChanges)
+                    {
+                        FlushTable(db, flushChange);
+                    }
+
+                    EnableAllConstraints(db);
+                }
+
+                var changes = changeInfo.Changes.Except(flushChanges).ToList();
+                var disabledForeignKeyConstraints = new Dictionary<ForeignKeyConstraint, long>();
+
+                if (destination.DisableAllConstraints == true)
+                {
+                    DisableAllConstraints(db);
+                }
+
+                for (int i = 0; i < changes.Count; i++)
+                {
+                    var change = changes[i];
+                    Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion})");
+
+                    if (destination.DisableAllConstraints != true)
+                    {
+                        foreach (var fk in change.ForeignKeyConstraintsToDisable)
                         {
-                            var flushChanges = changeInfo.Changes.Where(x => x.Operation == 'Z').ToList();
-
-                            if (flushChanges.Any())
+                            if (disabledForeignKeyConstraints.TryGetValue(fk.Key, out long untilVersion))
                             {
-                                Log.Debug($"Flushing changes for tables: {string.Join(",", flushChanges.Select(x => x.Table))})");
-
-                                DisableAllConstraints(db);
-
-                                foreach (var flushChange in flushChanges)
-                                {
-                                    FlushTable(db, flushChange);
-                                }
-
-                                EnableAllConstraints(db);
+                                // FK is already disabled, check if it needs to be deferred further than currently planned
+                                if (fk.Value > untilVersion)
+                                    disabledForeignKeyConstraints[fk.Key] = fk.Value;
                             }
-
-                            var changes = changeInfo.Changes.Except(flushChanges).ToList();
-                            var disabledForeignKeyConstraints = new Dictionary<ForeignKeyConstraint, long>();
-
-                            if (destination.DisableAllConstraints == true)
+                            else
                             {
-                                DisableAllConstraints(db);
+                                DisableForeignKeyConstraint(db, fk.Key);
+                                disabledForeignKeyConstraints[fk.Key] = fk.Value;
                             }
-
-                            for (int i = 0; i < changes.Count; i++)
-                            {
-                                var change = changes[i];
-                                Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion})");
-
-                                if (destination.DisableAllConstraints != true)
-                                {
-                                    foreach (var fk in change.ForeignKeyConstraintsToDisable)
-                                    {
-                                        if (disabledForeignKeyConstraints.TryGetValue(fk.Key, out long untilVersion))
-                                        {
-                                            // FK is already disabled, check if it needs to be deferred further than currently planned
-                                            if (fk.Value > untilVersion)
-                                                disabledForeignKeyConstraints[fk.Key] = fk.Value;
-                                        }
-                                        else
-                                        {
-                                            DisableForeignKeyConstraint(db, fk.Key);
-                                            disabledForeignKeyConstraints[fk.Key] = fk.Value;
-                                        }
-                                    }
-                                }
-
-                                PerformChange(db, change);
-
-                                if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
-                                {
-                                    foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
-                                    {
-                                        ReenableForeignKeyConstraint(db, fk);
-                                        disabledForeignKeyConstraints.Remove(fk);
-                                    }
-                                }
-                            }
-
-                            if (destination.DisableAllConstraints == true)
-                            {
-                                EnableAllConstraints(db);
-                            }
-                            else if (disabledForeignKeyConstraints.Any())
-                            {
-                                Log.Debug($"Renabling all disabled foreign keys");
-                                foreach (var fk in disabledForeignKeyConstraints.Keys.ToList())
-                                {
-                                    ReenableForeignKeyConstraint(db, fk);
-                                    disabledForeignKeyConstraints.Remove(fk);
-                                }
-                            }
-
-                            if (!DryRun)
-                            {
-                                SetSyncVersion(db, changeInfo.Version);
-                                transaction.Complete();
-                            }
-
-                            Log.Info($"Destination {destination.Name} now at version {changeInfo.Version}");
-
-                            // reset DisableAllConstraints after successful run
-                            if (destination.DisableAllConstraints == true)
-                            {
-                                Log.Info("Reset DisableAllConstraints on destination {0} ", destination.Name);
-                                destination.DisableAllConstraints = null;
-                            }
-#pragma warning disable CA1031 // Do not catch general exception types
-                        catch (Exception ex)
-                        {
-                            ExceptionCaught(ex);
                         }
+                    }
+
+                    PerformChange(db, change);
+
+                    if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
+                    {
+                        foreach (var fk in disabledForeignKeyConstraints.Where(f => f.Value <= change.CreationVersion).Select(f => f.Key).ToList())
+                        {
+                            ReenableForeignKeyConstraint(db, fk);
+                            disabledForeignKeyConstraints.Remove(fk);
+                        }
+                    }
+                }
+
+                if (destination.DisableAllConstraints == true)
+                {
+                    EnableAllConstraints(db);
+                }
+                else if (disabledForeignKeyConstraints.Any())
+                {
+                    Log.Debug($"Renabling all disabled foreign keys");
+                    foreach (var fk in disabledForeignKeyConstraints.Keys.ToList())
+                    {
+                        ReenableForeignKeyConstraint(db, fk);
+                        disabledForeignKeyConstraints.Remove(fk);
+                    }
+                }
+
+                if (!DryRun)
+                {
+                    SetSyncVersion(db, changeInfo.Version);
+                    transaction.Complete();
+                }
+
+                Log.Info($"Destination {destination.Name} now at version {changeInfo.Version}");
+
+                // reset DisableAllConstraints after successful run
+                if (destination.IsTemporaryDisableAllConstraints())
+                {
+                    Log.Info("Reset DisableAllConstraints on destination {0} ", destination.Name);
+                    destination.TemporaryDisableAllConstraints(false);
+                }
+#pragma warning disable CA1031 // Do not catch general exception types
+        }
 #pragma warning restore CA1031 // Do not catch general exception types
                     }
 #pragma warning disable CA1031 // Do not catch general exception types
@@ -543,7 +561,7 @@ namespace SyncChanges
             }
         }
 
-        private ChangeInfo RetrieveChanges(DatabaseInfo source, IGrouping<long, DatabaseInfo> destinations, IList<TableInfo> tables)
+        private ChangeInfo RetrieveChanges(DatabaseInfo source, IGrouping<long, DatabaseInfo> destinations, IList<TableInfo> tables, int mavChangetrackingVersion = 0)
         {
             var destinationVersion = destinations.Key;
             var changeInfo = new ChangeInfo();
@@ -612,11 +630,15 @@ namespace SyncChanges
                     else
                     {
                         var sql = $@"select c.SYS_CHANGE_OPERATION, c.SYS_CHANGE_VERSION, c.SYS_CHANGE_CREATION_VERSION,
-                            {string.Join(", ", table.KeyColumns.Select(c => "c." + c).Concat(table.OtherColumns.Select(c => "t." + c)))}
-                            from CHANGETABLE (CHANGES {tableName}, @0) c
-                            left outer join {tableName} t on ";
+{string.Join(", ", table.KeyColumns.Select(c => "c." + c).Concat(table.OtherColumns.Select(c => "t." + c)))}
+from CHANGETABLE (CHANGES {tableName}, @0) c
+left outer join {tableName} t on ";
                         sql += string.Join(" and ", table.KeyColumns.Select(k => $"c.{k} = t.{k}"));
-                        sql += " order by coalesce(c.SYS_CHANGE_CREATION_VERSION, c.SYS_CHANGE_VERSION)";
+                        if(mavChangetrackingVersion > 0)
+                        {
+                            sql += Environment.NewLine + $" WHERE c.SYS_CHANGE_VERSION < {mavChangetrackingVersion}";
+                        }
+                        sql += Environment.NewLine + " ORDER BY coalesce(c.SYS_CHANGE_CREATION_VERSION, c.SYS_CHANGE_VERSION)";
 
                         Log.Debug($"Retrieving changes for table {tableName}: {sql}");
 

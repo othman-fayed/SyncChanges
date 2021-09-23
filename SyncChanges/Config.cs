@@ -12,6 +12,15 @@ namespace SyncChanges
     /// </summary>
     public class Config
     {
+        /// <summary>
+        /// Optional. Database connection timeout
+        /// </summary>
+        public int? Timeout { get; set; }
+
+        /// <summary>
+        /// Optional. Minimum synchronization time interval in seconds
+        /// </summary>
+        public int? Interval { get; set; }
 
         /// <summary>
         /// Gets the replication sets.
@@ -115,6 +124,37 @@ namespace SyncChanges
         /// Set true to disable all constraints when inserting into database
         /// </summary>
         public bool? DisableAllConstraints { get; set; }
+
+        private bool? originalDisableAllConstraints;
+        private bool temporaryDisableAllConstraints;
+
+        /// <summary>
+        /// Checks if DisableAllConstraints is enabled temprary to handle error 
+        /// </summary>
+        /// <returns></returns>
+        public bool IsTemporaryDisableAllConstraints()
+        {
+            return temporaryDisableAllConstraints == true;
+        }
+
+        /// <summary>
+        /// Enables DisableAllConstraints and sets it as Temporary
+        /// </summary>
+        public void TemporaryDisableAllConstraints(bool enable = true)
+        {
+            if (enable)
+            {
+                temporaryDisableAllConstraints = true;
+                originalDisableAllConstraints = DisableAllConstraints;
+                DisableAllConstraints = true;
+            }
+            else if (temporaryDisableAllConstraints)
+            {
+                temporaryDisableAllConstraints = false;
+                DisableAllConstraints = originalDisableAllConstraints;
+                originalDisableAllConstraints = null;
+            }
+        }
     }
 
     /// <summary>
