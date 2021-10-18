@@ -67,6 +67,11 @@ namespace SyncChanges
         /// The tables to be replicated.
         /// </value>
         public List<string> Tables { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Gets or sets the names of the tables to be excluded from replication
+        /// </summary>
+        public List<string> ExcludeTables { get; set; } = new List<string>();
     }
 
     /// <summary>
@@ -154,6 +159,31 @@ namespace SyncChanges
                 DisableAllConstraints = originalDisableAllConstraints;
                 originalDisableAllConstraints = null;
             }
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is DatabaseInfo info &&
+                   Name == info.Name &&
+                   ConnectionString == info.ConnectionString;
+        }
+
+        public override int GetHashCode()
+        {
+            int hashCode = -94852918;
+            hashCode = hashCode * -1521134295 + EqualityComparer<string>.Default.GetHashCode(Name);
+            hashCode = hashCode * -1521134295 + EqualityComparer<string>.Default.GetHashCode(ConnectionString);
+            return hashCode;
+        }
+
+        public static bool operator ==(DatabaseInfo left, DatabaseInfo right)
+        {
+            return EqualityComparer<DatabaseInfo>.Default.Equals(left, right);
+        }
+
+        public static bool operator !=(DatabaseInfo left, DatabaseInfo right)
+        {
+            return !(left == right);
         }
     }
 

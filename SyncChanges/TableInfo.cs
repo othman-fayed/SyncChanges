@@ -10,5 +10,6 @@ namespace SyncChanges
         public IList<ForeignKeyConstraint> ForeignKeyConstraints { get; set; }
         public IList<UniqueConstraint> UniqueConstraints { get; set; }
         public bool HasIdentity { get; set; }
+        public bool IsChangeTrackingEnabled { get; set; }
     }
 }

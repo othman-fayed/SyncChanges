@@ -54,6 +54,13 @@ namespace SyncChanges
         bool Error { get; set; }
 
         /// <summary>
+        /// Use the Version set in SyncInfo table instead of getting the min version per table
+        /// </summary>
+        public bool UseReplicaDatabaseVersionInsteadOfPerTable { get; private set; }
+        public bool IgnoreDuplicateKeyInserts { get; private set; }
+
+        public bool AllowRepopulate { get; private set; }
+        /// <summary>
         /// Initializes a new instance of the <see cref="Synchronizer"/> class.
         /// </summary>
         /// <param name="config">The configuration.</param>
@@ -89,6 +96,15 @@ namespace SyncChanges
                     tables = tables
                         .Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
                         .Where(t => replicationSet.Tables.Any(r => r == t.Name || r == t.Name.Split('.')[1]))
+                        .Select(t => t.Table)
+                        .ToList();
+                }
+
+                if (replicationSet.ExcludeTables?.Any() == true)
+                {
+                    tables = tables
+                        .Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
+                        .Where(t => false == replicationSet.ExcludeTables.Any(r => r == t.Name || r == t.Name.Split('.')[1]))
                         .Select(t => t.Table)
                         .ToList();
                 }
@@ -150,9 +166,11 @@ namespace SyncChanges
 
             Log.Info($"Starting replication for replication set {replicationSet.Name}");
 
-            var destinationsByVersion = replicationSet
+            var destinationsByVersionGroup = replicationSet
                 .Destinations
-                .GroupBy(d => GetCurrentVersion(d))
+                .GroupBy(d => GetCurrentVersion(d));
+
+            var destinationsByVersion = destinationsByVersionGroup
                 .Where(d => d.Key >= 0 && (sourceVersion < 0 || d.Key < sourceVersion))
                 .ToList();
 
@@ -240,14 +258,17 @@ namespace SyncChanges
             {
                 using var db = GetDatabase(dbInfo.ConnectionString, DatabaseType.SqlServer2008);
                 {
+                    //var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey from
+                    var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey, coalesce(max(cast(is_identity as tinyint)), 0) IdentityKey,
+                         MinValidVersion from
                     var sql = @"select TableName, ColumnName, iif(max(cast(is_primary_key as tinyint)) = 1, 1, 0) PrimaryKey, iif(max(cast(is_identity as tinyint)) = 1, 1, 0) IdentityKey from
                 var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey,
                         coalesce(max(cast(is_identity as tinyint)), 0) IsIdentity from
                         (
                         select ('[' + s.name + '].[' + t.name + ']') TableName, ('[' + COL_NAME(t.object_id, a.column_id) + ']') ColumnName,
-                        i.is_primary_key, a.is_identity
+                        i.is_primary_key, a.is_identity, tr.min_valid_version MinValidVersion
                         from sys.change_tracking_tables tr
-                        join sys.tables t on t.object_id = tr.object_id
+                        right join sys.tables t on t.object_id = tr.object_id
                         join sys.schemas s on s.schema_id = t.schema_id
                         join sys.columns a on a.object_id = t.object_id
                         JOIN sys.types ct ON ct.system_type_id = a.system_type_id
@@ -255,19 +276,34 @@ namespace SyncChanges
                         left join sys.indexes i on i.object_id = t.object_id and i.index_id = c.index_id
                         where a.is_computed = 0 and ct.name != 'timestamp'
                         ) X
-                        group by TableName, ColumnName
+                        group by TableName, ColumnName, MinValidVersion
                         order by TableName, ColumnName";
 
-                    var tables = db.Fetch<dynamic>(sql).GroupBy(t => t.TableName)
+                    var tables = db.Fetch<dynamic>(sql)
+                        .GroupBy(t => t.TableName)
                         .Select(g => new TableInfo
                         {
                             Name = (string)g.Key,
                             KeyColumns = g.Where(c => (int)c.PrimaryKey > 0).Select(c => (string)c.ColumnName).ToList(),
                             OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
+                            HasIdentityColumn = g.Any(c => (int)c.IdentityKey == 1),
+                            IsChangeTrackingEnabled = g.First().MinValidVersion != null
                         HasIdentity = g.Any(c => (int)c.IsIdentity > 0)
                             OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
                             HasIdentityColumn = g.Any(c => (int)c.IdentityKey == 1)
                         }).ToList();
+
+                    var untrackedTables = tables.Where(x => x.IsChangeTrackingEnabled == false).ToList();
+
+                    if (untrackedTables.Any())
+                    {
+                        Log.Fatal($"Untracked tables are: {string.Join(", ", untrackedTables.Select(x => x.Name))}");
+                        Log.Info(@"Use the following query to enable change tracking on table: 'ALTER TABLE Person.Contact  
+ENABLE CHANGE_TRACKING
+WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
+                        untrackedTables.ForEach(t => Log.Debug($"ALTER TABLE {t.Name} ENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = OFF)"));
+                        throw new Exception("Untracked tables found");
+                    }
 
                     var fks = db.Fetch<ForeignKeyConstraint>(@"select obj.name AS ForeignKeyName,
                             ('[' + sch.name + '].[' + tab1.name + ']') TableName,
@@ -348,23 +384,29 @@ namespace SyncChanges
 
         private void Replicate(DatabaseInfo source, IGrouping<long, DatabaseInfo> destinations, IList<TableInfo> tables)
         {
+        RetrieveChanges:
             var changeInfo = RetrieveChanges(source, destinations, tables);
             if (changeInfo == null) return;
+
 
             if (changeInfo.OutOfSyncDatabases.Any())
             {
                 // We shall loop the out of sync databases and populate per table
                 // Loop over table to populate databases.
+
+                changeInfo.Changes.Clear();
+                changeInfo.Changes.AddRange(tables.Select(table => new Change { Operation = 'Z', Table = table }));
             }
 
             // replicate changes to destinations
             var databases = destinations.ToList();
+
             for (var i = 0; i < databases.Count; i++)
             {
                 var destination = databases[i];
                 try
                 {
-                    ReplicateChanges(changeInfo, destination);
+                    ReplicateChanges(changeInfo, destination, source);
                 }
                 catch (Exception exception)
                 {
@@ -372,24 +414,39 @@ namespace SyncChanges
                     Log.Error(exception, $"Error replicating changes to destination {destination.Name}");
 
                     // foreign key error
-                    if (exception is SqlException sqlException && sqlException.Number == 547)
+                    if (exception is SqlException sqlException)
                     {
-                        if (destination.IsTemporaryDisableAllConstraints())
+                        if (sqlException.Number == 547)
                         {
-                            destination.TemporaryDisableAllConstraints(false);
-                        }
-                        else if (destination.DisableAllConstraints != true)
-                        {
-                            Log.Info("Enable DisableAllConstraints on destination {0} due to foreign key error", destination.Name);
-                            destination.TemporaryDisableAllConstraints();
-                            i--;
+                            // First, we try to use database version to see if some changes were missed
+                            if (UseReplicaDatabaseVersionInsteadOfPerTable == false)
+                            {
+                                UseReplicaDatabaseVersionInsteadOfPerTable = true;
+                                IgnoreDuplicateKeyInserts = true;
+                                goto RetrieveChanges;
+                            }
+
+                            // Second, we try to disable all constraints. This work if we are inserting in the wrong order
+                            if (destination.IsTemporaryDisableAllConstraints())
+                            {
+                                destination.TemporaryDisableAllConstraints(false);
+                            }
+                            else if (destination.DisableAllConstraints != true)
+                            {
+                                Log.Info("Enable DisableAllConstraints on destination {0} due to foreign key error", destination.Name);
+                                destination.TemporaryDisableAllConstraints();
+                                i--;
+                            }
                         }
                     }
                 }
             }
+
+            UseReplicaDatabaseVersionInsteadOfPerTable = false;
+            IgnoreDuplicateKeyInserts = false;
         }
 
-        private void ReplicateChanges(ChangeInfo changeInfo, DatabaseInfo destination)
+        private void ReplicateChanges(ChangeInfo changeInfo, DatabaseInfo destination, DatabaseInfo source)
         {
             Log.Info($"Replicating {"change".ToQuantity(changeInfo.Changes.Count)} to destination {destination.Name}");
 
@@ -407,9 +464,10 @@ namespace SyncChanges
 
                     DisableAllConstraints(db);
 
+                    long changeTrackingVersion = 0;
                     foreach (var flushChange in flushChanges)
                     {
-                        FlushTable(db, flushChange);
+                        FlushTable(db, flushChange, ref changeTrackingVersion, source: source);
                     }
 
                     EnableAllConstraints(db);
@@ -487,9 +545,9 @@ namespace SyncChanges
                     destination.TemporaryDisableAllConstraints(false);
                 }
 #pragma warning disable CA1031 // Do not catch general exception types
-        }
+            }
 #pragma warning restore CA1031 // Do not catch general exception types
-                    }
+        }
 #pragma warning disable CA1031 // Do not catch general exception types
                 catch (Exception ex)
                 {
@@ -561,7 +619,11 @@ namespace SyncChanges
             }
         }
 
-        private ChangeInfo RetrieveChanges(DatabaseInfo source, IGrouping<long, DatabaseInfo> destinations, IList<TableInfo> tables, int mavChangetrackingVersion = 0)
+        private ChangeInfo RetrieveChanges(
+            DatabaseInfo source,
+            IGrouping<long, DatabaseInfo> destinations,
+            IList<TableInfo> tables,
+            int maxChangetrackingVersion = 0)
         {
             var destinationVersion = destinations.Key;
             var changeInfo = new ChangeInfo();
@@ -586,7 +648,12 @@ namespace SyncChanges
                 foreach (var table in tables)
                 {
                     var tableName = table.Name;
-                    var minVersion = db.ExecuteScalar<long?>("select CHANGE_TRACKING_MIN_VALID_VERSION(OBJECT_ID(@0))", tableName);
+                    var minVersion = UseReplicaDatabaseVersionInsteadOfPerTable
+                        ? destinationVersion
+                        : db.ExecuteScalar<long?>("select CHANGE_TRACKING_MIN_VALID_VERSION(OBJECT_ID(@0))", tableName)
+                        ;
+
+                    Log.Trace(() => $"select CHANGE_TRACKING_MIN_VALID_VERSION(OBJECT_ID({tableName}))");
 
                     Log.Info($"Minimum version of table {tableName} in database {source.Name} is {minVersion}");
 
@@ -611,7 +678,7 @@ namespace SyncChanges
                         Error = true;
                         return null;
                     }
-                    //else if (minVersion > destinationVersion && allowRepopulate)
+                    //else if (minVersion > destinationVersion && AllowRepopulate)
                     //{
                     //    changeInfo.OutOfSyncVersions.Add(destinationVersion);
 
@@ -634,13 +701,14 @@ namespace SyncChanges
 from CHANGETABLE (CHANGES {tableName}, @0) c
 left outer join {tableName} t on ";
                         sql += string.Join(" and ", table.KeyColumns.Select(k => $"c.{k} = t.{k}"));
-                        if(mavChangetrackingVersion > 0)
+                        if (maxChangetrackingVersion > 0)
                         {
-                            sql += Environment.NewLine + $" WHERE c.SYS_CHANGE_VERSION < {mavChangetrackingVersion}";
+                            sql += Environment.NewLine + $" WHERE c.SYS_CHANGE_VERSION < {maxChangetrackingVersion}";
                         }
                         sql += Environment.NewLine + " ORDER BY coalesce(c.SYS_CHANGE_CREATION_VERSION, c.SYS_CHANGE_VERSION)";
 
-                        Log.Debug($"Retrieving changes for table {tableName}: {sql}");
+                        Log.Debug($"Retrieving changes for table {tableName}");
+                        Log.Trace($"{tableName}: {sql}");
 
                         db.OpenSharedConnection();
                         var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql, destinationVersion);
@@ -696,15 +764,40 @@ left outer join {tableName} t on ";
             return changeInfo;
         }
 
-        private List<Change> GetAllData(Database db, TableInfo table, long version)
+        private List<Change> GetAllRows(Database db, TableInfo table, long version, int? skip = null, int? take = null)
         {
             var changes = new List<Change>();
             string tableName = table.Name;
 
+            string sql;
+            //            var sql = $@"select {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
+            //from {tableName} 
+            //order by {string.Join(", ", table.KeyColumns.Select(c => c))}";
 
-            var sql = $@"select {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
-                            from {tableName}";
-            Log.Debug($"Retrieving changes for table {tableName}: {sql}");
+            if (skip.HasValue || take.HasValue)
+            {
+                //SELECT* FROM
+                //(SELECT ROW_NUMBER() OVER (ORDER BY Id) as RowNumber, *
+                //  FROM Customer) AS Tbl
+                //  where RowNumber > 1
+                var top = take.HasValue ? $" TOP ({take.Value}) " : "";
+                var where = skip.HasValue ? $" WHERE RowNumber > {skip.Value}) " : "";
+
+                var keyColumns = string.Join(", ", table.KeyColumns.Select(c => c));
+                var allColumns = string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)));
+                sql = $@"SELECT {top} {allColumns}
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY {keyColumns}) as RowNumber, * FROM {tableName} ORDER BY {keyColumns})
+{where}
+ORDER BY RowNumber";
+            }
+            else
+            {
+                sql = $@"SELECT {string.Join(", ", table.KeyColumns.Select(c => c).Concat(table.OtherColumns.Select(c => c)))}
+FROM {tableName} 
+ORDER BY {string.Join(", ", table.KeyColumns.Select(c => c))}";
+            }
+            Log.Debug($"Retrieving changes for table {tableName}");
+            Log.Trace($"{tableName}: {sql}");
 
             db.OpenSharedConnection();
             var cmd = db.CreateCommand(db.Connection, System.Data.CommandType.Text, sql);
@@ -776,7 +869,7 @@ left outer join {tableName} t on ";
                 }
             }
 
-            Log.Debug(messageFunc: () =>
+            Log.Trace(messageFunc: () =>
             {
                 return "Computed foreign key for the changes " + JSON.ToJSON(changeInfo);
             });
@@ -828,7 +921,17 @@ left outer join {tableName} t on ";
 
                     if (!DryRun)
                     {
-                        db.Execute(insertSql, insertValues);
+                        try
+                        {
+                            db.Execute(insertSql, insertValues);
+                        }
+                        catch (SqlException sqlException)
+                        {
+                            if (sqlException.Number != 2627 || IgnoreDuplicateKeyInserts != true)
+                            {
+                                throw;
+                            }
+                        }
                     }
 
                     break;
@@ -840,7 +943,7 @@ left outer join {tableName} t on ";
                         string.Join(", ", updateColumnNames.Select((c, i) => $"{c} = @{i + change.Keys.Count}")),
                         PrimaryKeys(change));
                     var updateValues = change.GetValues();
-                    Log.Debug($"Executing update: {updateSql} ({FormatArgs(updateValues)})");
+                    Log.Trace($"Executing update: {updateSql} ({FormatArgs(updateValues)})");
 
                     if (!DryRun)
                     {
@@ -853,7 +956,7 @@ left outer join {tableName} t on ";
                 case 'D':
                     var deleteSql = string.Format("delete from {0} where {1}", tableName, PrimaryKeys(change));
                     var deleteValues = change.Keys.Values.ToArray();
-                    Log.Debug($"Executing delete: {deleteSql} ({FormatArgs(deleteValues)})");
+                    Log.Trace($"Executing delete: {deleteSql} ({FormatArgs(deleteValues)})");
 
                     if (!DryRun)
                     {
@@ -864,13 +967,27 @@ left outer join {tableName} t on ";
             }
         }
 
-        private void FlushTable(Database db, Change flushChange)
+        /// <summary>
+        /// Pass changeTrackingVersion as 0 to select version from db
+        /// </summary>
+        /// <param name="db"></param>
+        /// <param name="flushChange"></param>
+        /// <param name="changeTrackingVersion"></param>
+        /// <param name="dataInSubChanges"></param>
+        /// <param name="source"></param>
+        /// <returns></returns>
+        private void FlushTable(Database db,
+            Change flushChange,
+            ref long changeTrackingVersion,
+            bool dataInSubChanges = false,
+            DatabaseInfo source = null)
         {
             var table = flushChange.Table;
             var tableName = table.Name;
 
             var deleteAllSql = string.Format("delete from {0}", tableName);
-            Log.Debug($"Executing delete all: {deleteAllSql} ");
+            //var deleteAllSql = string.Format("truncate  {0}", tableName);
+            Log.Trace($"Executing delete all: {deleteAllSql} ");
 
             if (!DryRun)
             {
@@ -880,7 +997,7 @@ left outer join {tableName} t on ";
             if (table.HasIdentityColumn)
             {
                 var insertSql = $"set IDENTITY_INSERT {tableName} ON;";
-                Log.Debug($"IDENTITY INSERT ON: {insertSql}");
+                Log.Trace($"IDENTITY INSERT ON: {insertSql}");
 
                 if (!DryRun)
                 {
@@ -888,40 +1005,190 @@ left outer join {tableName} t on ";
                 }
             }
 
-            foreach (var change in flushChange.SubChanges)
+            if (dataInSubChanges)
             {
-                var insertColumnNames = change.GetColumnNames();
-                //var insertSql = $"set IDENTITY_INSERT {tableName} ON; " +
-                //    string.Format("insert into {0} ({1}) values ({2}); ", tableName,
-                //    string.Join(", ", insertColumnNames),
-                //    string.Join(", ", Parameters(insertColumnNames.Count))) +
-                //    $"set IDENTITY_INSERT {tableName} OFF";
+                foreach (var change in flushChange.SubChanges)
+                {
+                    var insertColumnNames = change.GetColumnNames();
+                    //var insertSql = $"set IDENTITY_INSERT {tableName} ON; " +
+                    //    string.Format("insert into {0} ({1}) values ({2}); ", tableName,
+                    //    string.Join(", ", insertColumnNames),
+                    //    string.Join(", ", Parameters(insertColumnNames.Count))) +
+                    //    $"set IDENTITY_INSERT {tableName} OFF";
+
+                    var insertSql = string.Format("insert into {0} ({1}) values ({2})",
+                        tableName,
+                        string.Join(", ", insertColumnNames),
+                        string.Join(", ", Parameters(insertColumnNames.Count)));
+
+                    var insertValues = change.GetValues();
+                    Log.Trace($"Executing insert: {insertSql} ({FormatArgs(insertValues)})");
+
+                    if (!DryRun)
+                    {
+                        db.Execute(insertSql, insertValues);
+                    }
+                }
+            }
+            else
+            {
+                var allColumns = table.KeyColumns.Concat(table.OtherColumns);
+                var keyColumns = string.Join(", ", table.KeyColumns.Select(c => c));
+                var selectAllColumns = string.Join(", ", allColumns.Select(c => c));
+                var allColumnsCount = allColumns.Count();
 
                 var insertSql = string.Format("insert into {0} ({1}) values ({2})",
-                    tableName,
-                    string.Join(", ", insertColumnNames),
-                    string.Join(", ", Parameters(insertColumnNames.Count)));
+                        tableName,
+                        string.Join(", ", selectAllColumns),
+                        string.Join(", ", Parameters(allColumnsCount)));
 
-                var insertValues = change.GetValues();
-                Log.Debug($"Executing insert: {insertSql} ({FormatArgs(insertValues)})");
+                //Log.Trace($"Executing insert: {insertSql} ({FormatArgs(insertValues)})");
 
-                if (!DryRun)
+                if (!DryRun && false)
                 {
-                    db.Execute(insertSql, insertValues);
+                    int start = 0;
+                    int increment = 1000;
+                    var end = start;
+
+                    Log.Debug($"Retrieving all records for table {tableName}");
+
+                    string orderByColumns;
+                    if (allColumns.Any(x => x.ToLower() == "CreatedOn"))
+                    {
+                        orderByColumns = "T.[CreatedOn], " + string.Join(", ", table.KeyColumns.Select(c => $"T.{c}"));
+                    }
+                    else
+                    {
+                        orderByColumns = string.Join(", ", table.KeyColumns.Select(c => $"T.{c}"));
+                    }
+
+                    string sql = $@"SELECT {selectAllColumns}
+                        FROM (
+SELECT ROW_NUMBER() OVER (ORDER BY {orderByColumns}) as RowNumber, T.*
+FROM {tableName} as T
+LEFT OUTER JOIN CHANGETABLE (CHANGES {tableName}, 0) AS CT  ON {string.Join(" and ", table.KeyColumns.Select(k => $"CT.{k} = T.{k}"))}
+WHERE CT.SYS_CHANGE_VERSION <= @2 or CT.SYS_CHANGE_VERSION IS NULL
+) AS tbl
+WHERE RowNumber > @0 AND RowNumber <= @1
+ORDER BY RowNumber";
+
+                    //                    if (changeTrackingVersion != 0)
+                    //                    {
+                    //                    }
+                    //                    else
+                    //                    {
+                    //                        sql = $@"SELECT {selectAllColumns}
+                    //FROM (SELECT ROW_NUMBER() OVER (ORDER BY {orderByColumns}) as RowNumber, * FROM {tableName}) AS tbl
+                    //WHERE RowNumber > @0 AND RowNumber <= @1
+                    //ORDER BY RowNumber";
+                    //                    }
+
+                    using (var sourceDb = GetDatabase(source.ConnectionString, DatabaseType.SqlServer2008))
+                    {
+                        sourceDb.OpenSharedConnection();
+
+                        if (changeTrackingVersion == 0)
+                        {
+                            changeTrackingVersion = sourceDb.ExecuteScalar<long>("select CHANGE_TRACKING_CURRENT_VERSION()");
+                        }
+
+                        while (start == end)
+                        {
+                            end = start + increment;
+                            //                            var top = take.HasValue ? $" TOP ({take.Value}) " : "";
+                            //                            var where = skip > 0 ? $" WHERE RowNumber > {skip}) " : "";
+
+                            //                            var sql = $@"SELECT {top} {selectAllColumns}
+                            //FROM (SELECT ROW_NUMBER() OVER (ORDER BY {keyColumns}) as RowNumber, * FROM {tableName} ORDER BY {keyColumns})
+                            //{where}
+                            //ORDER BY RowNumber";
+
+                            Log.Trace($"{tableName}: {sql}");
+
+                            var cmd = sourceDb.CreateCommand(
+                                sourceDb.Connection,
+                                System.Data.CommandType.Text,
+                                sql,
+                                start,
+                                end,
+                                changeTrackingVersion);
+
+                            using (var reader = cmd.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    var insertValues = new object[allColumnsCount];
+                                    reader.GetValues(insertValues);
+
+                                    db.Execute(insertSql, insertValues);
+                                    start++;
+                                }
+                            }
+                        }
+                    }
+
+                    Log.Debug($"Inserted into {tableName} total of {start} record");
                 }
+                else if (!DryRun)
+                {
+                    Log.Debug($"Retrieving all records for table {tableName}");
+
+                    string orderByColumns;
+                    if (allColumns.Any(x => x.ToLower() == "CreatedOn"))
+                    {
+                        orderByColumns = "[CreatedOn], " + keyColumns;
+                    }
+                    else
+                    {
+                        orderByColumns = keyColumns;
+                    }
+
+                    string sql = $@"SELECT {selectAllColumns} FROM {tableName} ORDER BY {orderByColumns}";
+                    var start = 0;
+
+                    using (var sourceDb = GetDatabase(source.ConnectionString, DatabaseType.SqlServer2008))
+                    {
+                        sourceDb.OpenSharedConnection();
+
+                        Log.Trace($"{tableName}: {sql}");
+
+                        var cmd = sourceDb.CreateCommand(
+                            sourceDb.Connection,
+                            System.Data.CommandType.Text,
+                            sql);
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                var insertValues = new object[allColumnsCount];
+                                reader.GetValues(insertValues);
+
+                                db.Execute(insertSql, insertValues);
+                                start++;
+                            }
+                        }
+
+                    }
+
+                    Log.Debug($"Inserted into {tableName} total of {start} record");
+                }
+
             }
 
             if (table.HasIdentityColumn)
             {
                 var insertSql = $"set IDENTITY_INSERT {tableName} OFF;";
-                Log.Debug($"IDENTITY INSERT OFF: {insertSql}");
+                Log.Trace($"IDENTITY INSERT OFF: {insertSql}");
 
                 if (!DryRun)
                 {
                     db.Execute(insertSql);
                 }
             }
+
         }
+
 
         private static string FormatArgs(object[] args) => string.Join(", ", args.Select((a, i) => $"@{i} = {a}"));
 
