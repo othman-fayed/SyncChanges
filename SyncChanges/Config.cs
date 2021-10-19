@@ -116,9 +116,9 @@ namespace SyncChanges
         public IList<TableMapping> TableMapping { get; set; } = new List<TableMapping>();
 
         /// <summary>
-        /// Adds a row version column to be used by SyncChanges
+        /// Adds a row version column to be used by SyncChanges 
         /// </summary>
-        public bool AddRowVersionColumn { get; set; } = true;
+        public bool AddRowVersionColumn { get; set; } = false;
 
         /// <summary>
         /// Row version name
