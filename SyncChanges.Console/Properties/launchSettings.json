@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "SyncChanges.Console": {
+      "commandName": "Project",
+      "commandLineArgs": "dev.json"
+    }
+  }
+}
