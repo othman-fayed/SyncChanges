@@ -211,10 +211,31 @@ namespace SyncChanges
 
                     try
                     {
-                        using (var db = GetDatabase(replicationSet.Source.ConnectionString, DatabaseType.SqlServer2008))
+                        // TODO: Add code to handle if Change Tracking is not enabled
+                        // It's being handled in GetCurrentVersion method
+                        /*
+                         * Option 1: 
+                         * SELECT * FROM sys.change_tracking_databases WHERE database_id = DB_ID('model');
+                         * Returns no rows if change tracking is not enabled // Needs verification
+                         * 
+                         * Option 2: 
+                         * select CHANGE_TRACKING_CURRENT_VERSION()
+                         * Returns null     // Needs verification
+                         */
+
+                        version = GetCurrentVersion(replicationSet.Source); // Returns -1 if tracking not enabled
+
+                        if (version == -1)
                         {
-                            version = db.ExecuteScalar<long>("select CHANGE_TRACKING_CURRENT_VERSION()");
+                            Log.Warn($"Change tracking is not enabled for source database {replicationSet.Source.Name}");
+                            Error = true;
+                            continue;
                         }
+
+                        //using (var db = GetDatabase(replicationSet.Source.ConnectionString, DatabaseType.SqlServer2008))
+                        //{
+                        //    version = db.ExecuteScalar<long>("select CHANGE_TRACKING_CURRENT_VERSION()");
+                        //}
 
                         Log.Debug($"Current version of source in replication set {replicationSet.Name} is {version}.");
 
@@ -262,22 +283,28 @@ namespace SyncChanges
                 //var sql = @"select TableName, ColumnName, iif(max(cast(is_primary_key as tinyint)) = 1, 1, 0) PrimaryKey, iif(max(cast(is_identity as tinyint)) = 1, 1, 0) IdentityKey from
                 //var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey,
                 // coalesce(max(cast(is_identity as tinyint)), 0) IsIdentity from
-                var sql = @"select TableName, ColumnName, coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey, coalesce(max(cast(is_identity as tinyint)), 0) IdentityKey,
-                         MinValidVersion from
-                        (
-                        select ('[' + s.name + '].[' + t.name + ']') TableName, ('[' + COL_NAME(t.object_id, a.column_id) + ']') ColumnName,
-                        i.is_primary_key, a.is_identity, tr.min_valid_version MinValidVersion
-                        from sys.change_tracking_tables tr
-                        right join sys.tables t on t.object_id = tr.object_id
-                        join sys.schemas s on s.schema_id = t.schema_id
-                        join sys.columns a on a.object_id = t.object_id
-                        JOIN sys.types ct ON ct.system_type_id = a.system_type_id
-                        left join sys.index_columns c on c.object_id = t.object_id and c.column_id = a.column_id
-                        left join sys.indexes i on i.object_id = t.object_id and i.index_id = c.index_id
-                        where a.is_computed = 0 and ct.name != 'timestamp'
-                        ) X
-                        group by TableName, ColumnName, MinValidVersion
-                        order by TableName, ColumnName";
+                var sql = @"select 
+    TableName, 
+    ColumnName, 
+    coalesce(max(cast(is_primary_key as tinyint)), 0) PrimaryKey, 
+    coalesce(max(cast(is_identity as tinyint)), 0) IdentityKey,
+    MinValidVersion 
+    from
+    (
+        select ('[' + s.name + '].[' + t.name + ']') TableName, ('[' + COL_NAME(t.object_id, a.column_id) + ']') ColumnName,
+        i.is_primary_key, a.is_identity, tr.min_valid_version MinValidVersion
+        from sys.change_tracking_tables tr
+        right join sys.tables t on t.object_id = tr.object_id
+        join sys.schemas s on s.schema_id = t.schema_id
+        join sys.columns a on a.object_id = t.object_id
+        JOIN sys.types ct ON ct.system_type_id = a.system_type_id
+        left join sys.index_columns c on c.object_id = t.object_id and c.column_id = a.column_id
+        left join sys.indexes i on i.object_id = t.object_id and i.index_id = c.index_id
+        where a.is_computed = 0 and ct.name != 'timestamp' and t.name != 'MSchange_tracking_history'
+    ) X
+    group by TableName, ColumnName, MinValidVersion
+    order by TableName, ColumnName
+";
 
                 var tables = db.Fetch<dynamic>(sql)
                     .GroupBy(t => t.TableName)
@@ -286,7 +313,7 @@ namespace SyncChanges
                         Name = (string)g.Key,
                         KeyColumns = g.Where(c => (int)c.PrimaryKey > 0).Select(c => (string)c.ColumnName).ToList(),
                         OtherColumns = g.Where(c => (int)c.PrimaryKey == 0).Select(c => (string)c.ColumnName).ToList(),
-                        HasIdentity = g.Any(c => (int)c.IsIdentity > 0),
+                        HasIdentity = g.Any(c => (int)c.IdentityKey > 0),
                         IsChangeTrackingEnabled = g.First().MinValidVersion != null,
                     }).ToList();
 
@@ -384,7 +411,6 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
         RetrieveChangesL:
             var changeInfo = RetrieveChanges(source, destinations, tables);
             if (changeInfo == null) return;
-
 
             if (changeInfo.OutOfSyncDatabases.Any())
             {
@@ -519,7 +545,7 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
             }
             else if (disabledForeignKeyConstraints.Any())
             {
-                Log.Debug($"Renabling all disabled foreign keys");
+                Log.Debug($"Re-enabling all disabled foreign keys");
                 foreach (var fk in disabledForeignKeyConstraints.Keys.ToList())
                 {
                     ReenableForeignKeyConstraint(db, fk);
@@ -1189,6 +1215,11 @@ ORDER BY RowNumber";
 
         private static IEnumerable<string> Parameters(int n) => Enumerable.Range(0, n).Select(c => "@" + c);
 
+        /// <summary>
+        /// Gets current version from SyncInfo, falls back to CHANGE_TRACKING_CURRENT_VERSION if SyncInfo table is not found
+        /// </summary>
+        /// <param name="dbInfo"></param>
+        /// <returns>Returns current version or -1 if Change tracking not enabled in database</returns>
         private long GetCurrentVersion(DatabaseInfo dbInfo)
         {
             try
@@ -1204,7 +1235,7 @@ ORDER BY RowNumber";
                     if (currentVersion < 0)
                     {
                         Log.Info($"Change tracking not enabled in database {dbInfo.Name}, assuming version 0");
-                        currentVersion = 0;
+                        //currentVersion = 0;
                     }
                     else
                         Log.Info($"Database {dbInfo.Name} is at version {currentVersion}");

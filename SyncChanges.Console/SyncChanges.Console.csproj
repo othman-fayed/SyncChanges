@@ -33,6 +33,9 @@
 		<ProjectReference Include="..\SyncChanges\SyncChanges.csproj" />
 	</ItemGroup>
 	<ItemGroup>
+		<None Update="ops.json">
+		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
 		<None Update="dev.json">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>

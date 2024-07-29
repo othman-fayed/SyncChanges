@@ -11,5 +11,10 @@ namespace SyncChanges
         public IList<UniqueConstraint> UniqueConstraints { get; set; }
         public bool HasIdentity { get; set; }
         public bool IsChangeTrackingEnabled { get; set; }
+
+        public override string ToString()
+        {
+            return Name;
+        }
     }
 }

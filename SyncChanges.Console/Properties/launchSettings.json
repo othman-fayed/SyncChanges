@@ -2,7 +2,7 @@
   "profiles": {
     "SyncChanges.Console": {
       "commandName": "Project",
-      "commandLineArgs": "dev.json"
+      "commandLineArgs": "ops.json"
     }
   }
 }
