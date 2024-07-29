@@ -11,6 +11,11 @@ namespace SyncChanges
         public IList<UniqueConstraint> UniqueConstraints { get; set; }
         public bool HasIdentity { get; set; }
         public bool IsChangeTrackingEnabled { get; set; }
+        
+        /// <summary>
+        /// Ordering used to determine the order in which tables are processed based on their dependencies
+        /// </summary>
+        public int DependencyOrder { get; set; }
 
         public override string ToString()
         {

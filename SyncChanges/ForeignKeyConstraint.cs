@@ -27,5 +27,10 @@ namespace SyncChanges
         {
             return FullName.GetHashCode();
         }
+
+        public override string ToString()
+        {
+            return FullName;
+        }
     }
 }

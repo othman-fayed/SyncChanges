@@ -6,7 +6,13 @@ namespace SyncChanges
     class Change
     {
         public TableInfo Table { get; set; }
+        /// <summary>
+        /// Version value that is associated with the last change to the row
+        /// </summary>
         public long Version { get; set; }
+        /// <summary>
+        /// Version values that are associated with the last insert operation.
+        /// </summary>
         public long CreationVersion { get; set; }
 
         /// <summary>

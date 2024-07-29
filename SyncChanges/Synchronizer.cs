@@ -385,10 +385,30 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
                     ColumnNames = g.Select(c => c.ColumnName).ToList(),
                 }).ToList();
 
+
+                var sortedTables = new List<TableInfo>();
                 foreach (var table in tables)
+                {
                     table.UniqueConstraints = uqs.Where(u => u.TableName == table.Name).ToList();
 
-                return tables;
+                    var index = sortedTables.FindIndex(x => x.ForeignKeyConstraints.Any(x => x.ReferencedTableName == table.Name));
+                    if (index == -1)
+                    {
+                        sortedTables.Add(table);
+                    }
+                    else
+                    {
+                        sortedTables.Insert(index, table);
+                    }
+                }
+
+                for (int i = 0; i < sortedTables.Count; i++)
+                {
+                    sortedTables[i].DependencyOrder = i;
+                }
+
+                // tables are sorted based on their dependencies
+                return sortedTables;
             }
             catch (Exception ex)
             {
@@ -780,7 +800,17 @@ left outer join {tableName} t on ";
                     db.CompleteTransaction();
             }
 
-            changeInfo.Changes.AddRange(changes.OrderBy(c => c.Version).ThenBy(c => c.Table.Name));
+            // 1. Sort by creation version to handle forign key constraints
+            // 2. Sort by dependency order to handle foreign key constraints
+            // 3. Sort by operation, Update before Insert (might not be alway valid)
+            //      This handles the case where we have an index on IsActive or IsDeleted column
+
+            changeInfo.Changes.AddRange(
+                changes
+                .OrderBy(c => c.CreationVersion)
+                .ThenBy(c => c.Table.DependencyOrder)
+                .ThenByDescending(c => c.Operation)
+            );
 
             ComputeForeignKeyConstraintsToDisable(changeInfo);
 
@@ -858,7 +888,8 @@ ORDER BY {string.Join(", ", table.KeyColumns.Select(c => c))}";
 
         private void ComputeForeignKeyConstraintsToDisable(ChangeInfo changeInfo)
         {
-            var changes = changeInfo.Changes.OrderBy(c => c.CreationVersion).ThenBy(c => c.Table.Name).ToList();
+            var changes = changeInfo.Changes.OrderBy(c => c.CreationVersion).ThenBy(c => c.Table.DependencyOrder).ToList();
+            //var changes = changeInfo.Changes.OrderBy(c => c.CreationVersion).ThenBy(c => c.Table.Name).ToList();
 
             for (int i = 0; i < changes.Count; i++)
             {
@@ -1258,4 +1289,5 @@ ORDER BY RowNumber";
 #pragma warning restore CA1031 // Do not catch general exception types
         }
     }
+
 }
