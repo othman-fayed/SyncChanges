@@ -90,7 +90,9 @@ namespace SyncChanges
 
                 Log.Info($"Getting replication information for replication set {replicationSet.Name}");
 
-                var tables = GetTables(replicationSet.Source);
+                var tables = GetTables(replicationSet.Source, replicationSet.ExcludeTables);
+                
+                // Force adding tables.. Should we !?
                 if (replicationSet.Tables != null && replicationSet.Tables.Any())
                 {
                     tables = tables
@@ -100,19 +102,14 @@ namespace SyncChanges
                         .ToList();
                 }
 
-                if (replicationSet.ExcludeTables?.Any() == true)
-                {
-                    tables = tables
-                        .Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
-                        .Where(t => false == replicationSet.ExcludeTables.Any(r => r == t.Name || r == t.Name.Split('.')[1]))
-                        .Select(t => t.Table)
-                        .ToList();
-                }
-
                 if (!tables.Any())
+                {
                     Log.Warn("No tables to replicate (check if change tracking is enabled)");
+                }
                 else
+                {
                     Log.Info($"Replicating {"table".ToQuantity(tables.Count, ShowQuantityAs.None)} {string.Join(", ", tables.Select(t => t.Name))}");
+                }
 
                 Tables.Add(tables);
             }
@@ -273,7 +270,7 @@ namespace SyncChanges
             }
         }
 
-        private IList<TableInfo> GetTables(DatabaseInfo dbInfo)
+        private IList<TableInfo> GetTables(DatabaseInfo dbInfo, List<string> excludeTables = null)
         {
             try
             {
@@ -316,6 +313,15 @@ namespace SyncChanges
                         HasIdentity = g.Any(c => (int)c.IdentityKey > 0),
                         IsChangeTrackingEnabled = g.First().MinValidVersion != null,
                     }).ToList();
+
+                if (excludeTables?.Any() == true)
+                {
+                    tables = tables
+                        .Select(t => new { Table = t, Name = t.Name.Replace("[", "").Replace("]", "") })
+                        .Where(t => false == excludeTables.Any(r => r == t.Name || r == t.Name.Split('.')[1]))
+                        .Select(t => t.Table)
+                        .ToList();
+                }
 
                 var untrackedTables = tables.Where(x => x.IsChangeTrackingEnabled == false).ToList();
 
