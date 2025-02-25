@@ -14,12 +14,16 @@ namespace SyncChanges
         {
             try
             {
-                return JsonConvert.DeserializeObject<SyncSession>(File.ReadAllText(CURRENT_SESSION_FILENAME));
+                if (File.Exists(CURRENT_SESSION_FILENAME))
+                {
+                    return JsonConvert.DeserializeObject<SyncSession>(File.ReadAllText(CURRENT_SESSION_FILENAME));
+                }
             }
             catch (System.Exception)
             {
-                return new SyncSession();
             }
+
+            return new SyncSession();
         }
 
         public static void SaveSessionToFile(SyncSession syncSession)

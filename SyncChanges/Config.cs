@@ -96,7 +96,7 @@ namespace SyncChanges
         public string ConnectionString { get; set; }
 
         /// <summary>
-        /// Batch size in migration
+        /// Batch size in migration. Set the number of records to process in one batch
         /// </summary>
         public int? BatchSize { get; set; }
 
@@ -114,6 +114,11 @@ namespace SyncChanges
         /// Table mapping
         /// </summary>
         public IList<TableMapping> TableMapping { get; set; } = new List<TableMapping>();
+        
+        /// <summary>
+        /// Tables to log additional info. Use in debugging
+        /// </summary>
+        public IList<string> DebugTables { get; set; } = new List<string>();
 
         /// <summary>
         /// Adds a row version column to be used by SyncChanges 

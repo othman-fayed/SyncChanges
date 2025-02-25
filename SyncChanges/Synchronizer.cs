@@ -694,6 +694,8 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
                 changeInfo.Version = db.ExecuteScalar<long>("select CHANGE_TRACKING_CURRENT_VERSION()");
                 Log.Info($"Current version of database {source.Name} is {changeInfo.Version}");
 
+                var debugTables = source.DebugTables != null && source.DebugTables.Any();
+
                 foreach (var table in tables)
                 {
                     var tableName = table.Name;
@@ -791,6 +793,11 @@ left outer join {tableName} t on ";
                             for (int i = 0; i < table.OtherColumns.Count; i++, col++)
                             {
                                 change.Others[table.OtherColumns[i]] = reader.GetValue(col);
+
+                                if (debugTables && source.DebugTables.Contains(table.Name))
+                                {
+                                    Log.Info($"Debug Table: {tableName} - Column {table.OtherColumns[i]} [DataTypeName: {reader.GetDataTypeName(col)}, FieldType: {reader.GetFieldType(col)}, Value: {change.Others[table.OtherColumns[i]]}]");
+                                }
                             }
 
                             changes.Add(change);
@@ -1009,7 +1016,26 @@ ORDER BY {string.Join(", ", table.KeyColumns.Select(c => c))}";
 
                     if (!DryRun)
                     {
-                        db.Execute(updateSql, updateValues);
+                        try
+                        {
+                            db.Execute(updateSql, updateValues);
+                        }
+                        catch (System.Data.SqlClient.SqlException sqlException)
+                        {
+                            var doThrow = true;
+                            if (sqlException.Message == "Operand type clash: nvarchar is incompatible with image")
+                            {
+                                var contentsColIndex = updateColumnNames.IndexOf("[Contents]");
+                                if (contentsColIndex != -1 && Convert.IsDBNull(updateValues[contentsColIndex + change.Keys.Count]))
+                                {
+                                    updateValues[contentsColIndex + change.Keys.Count] = new byte[] { };
+                                    doThrow = false;
+                                    db.Execute(updateSql, updateValues);
+                                }
+                            }
+
+                            if (doThrow) throw;
+                        }
                     }
 
                     break;
