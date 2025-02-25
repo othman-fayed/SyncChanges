@@ -1,0 +1,17 @@
+{
+  "ReplicationSets": [
+    {
+      "Name": "Northwind",
+      "Source": {
+        "Name": "Primary",
+        "ConnectionString": "Data Source=WINDEV2011EVAL\\SQLEXPRESS, 1433;Initial Catalog=Northwind;User=sa;Password=123;MultipleActiveResultSets=True"
+      },
+      "Destinations": [
+        {
+          "Name": "Secondary 1",
+          "ConnectionString": "Data Source=WINDEV2011EVAL\\SQLEXPRESS, 1433;Initial Catalog=Sink;User=sa;Password=123;MultipleActiveResultSets=True"
+        }
+      ]
+    }
+  ]
+}

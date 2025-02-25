@@ -14,9 +14,13 @@ namespace SyncChanges.Tests
     [TestFixture]
     public class Tests
     {
-        const string ConnectionString = @"Server=(localdb)\MSSQLLocalDB;Integrated Security=true";
-        const string SourceDatabaseName = "SyncChangesTestSource";
-        const string DestinationDatabaseName = "SyncChangesTestDestination";
+        //const string ConnectionString = @"Server=(localdb)\MSSQLLocalDB;Integrated Security=true";
+        //const string SourceDatabaseName = "SyncChangesTestSource";
+        //const string DestinationDatabaseName = "SyncChangesTestDestination";
+
+        const string ConnectionString = @"Server=ES356\SQLEXPRESS;Integrated Security=true";
+        const string SourceDatabaseName = "AdventureWorksDW2019_Test";
+        const string DestinationDatabaseName = "AdventureWorksDW2019Replicated_Test";
 
         static string GetConnectionString(string db = "") => ConnectionString + (db.Length > 0 ? $";Initial Catalog={db}" : "");
         static Database GetDatabase(string db = "") => new(GetConnectionString(db), DatabaseType.SqlServer2012, System.Data.SqlClient.SqlClientFactory.Instance);

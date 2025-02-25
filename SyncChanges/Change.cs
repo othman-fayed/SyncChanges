@@ -6,8 +6,18 @@ namespace SyncChanges
     class Change
     {
         public TableInfo Table { get; set; }
+        /// <summary>
+        /// Version value that is associated with the last change to the row
+        /// </summary>
         public long Version { get; set; }
+        /// <summary>
+        /// Version values that are associated with the last insert operation.
+        /// </summary>
         public long CreationVersion { get; set; }
+
+        /// <summary>
+        /// I = Insert, U = Update, D = Delete, Z = Repopulate and insert data
+        /// </summary>
         public char Operation { get; set; }
         public Dictionary<string, object> Keys { get; private set; } = new Dictionary<string, object>();
         public Dictionary<string, object> Others { get; private set; } = new Dictionary<string, object>();
@@ -16,6 +26,7 @@ namespace SyncChanges
         public object[] GetValues() => Keys.Values.Concat(Others.Values).ToArray();
 
         public List<string> GetColumnNames() => Keys.Keys.Concat(Others.Keys).ToList();
+        public List<Change> SubChanges { get; set; } = new List<Change>();
 
         public object GetValue(string columnName)
         {
@@ -23,5 +34,6 @@ namespace SyncChanges
                 return null;
             return o;
         }
+
     }
 }

@@ -32,10 +32,24 @@ namespace SyncChanges.Service
         {
             Config config = null;
 
+            var timeout = int.Parse(ConfigurationManager.AppSettings["Timeout"]);
+            var interval = int.Parse(ConfigurationManager.AppSettings["Interval"]);
+            var dryRun = ConfigurationManager.AppSettings["DryRun"].Equals("true", StringComparison.OrdinalIgnoreCase);
+
             try
             {
                 var path = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
                 config = JsonConvert.DeserializeObject<Config>(File.ReadAllText(Path.Combine(path, "config.json")));
+
+                if (config.Timeout.HasValue)
+                {
+                    timeout = config.Timeout.Value;
+                }
+
+                if (config.Interval.HasValue)
+                {
+                    interval = config.Interval.Value;
+                }
             }
             catch (Exception ex)
             {
@@ -46,9 +60,7 @@ namespace SyncChanges.Service
 
             try
             {
-                var timeout = int.Parse(ConfigurationManager.AppSettings["Timeout"]);
-                var interval = int.Parse(ConfigurationManager.AppSettings["Interval"]);
-                var dryRun = ConfigurationManager.AppSettings["DryRun"].Equals("true", StringComparison.OrdinalIgnoreCase);
+                Log.Info($"Synchronizer starting with Timeout: {timeout} - Interval: {interval} - Dry Run: {dryRun}");
 
                 CancellationTokenSource = new CancellationTokenSource();
                 Synchronizer = new Synchronizer(config) { Timeout = timeout, Interval = interval, DryRun = dryRun };

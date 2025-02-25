@@ -1,0 +1,51 @@
+{
+  "ReplicationSets": [
+    //{
+    //  "Name": "Dev",
+    //  "Source": {
+    //    "Name": "Primary",
+    //    "_ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019;Integrated Security=true;MultipleActiveResultSets=True",
+    //    "ConnectionString": "Data Source=webserver;Initial Catalog=AviMallEsfs;User Id=sa;Password=sa123!@#;MultipleActiveResultSets=True; Timeout=60"
+    //  },
+    //  "ExcludeTables": [ "dbo.DocumentContent" ],
+    //  "Destinations": [
+    //    {
+    //      "Name": "Secondary 1",
+    //      "_ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019Replicated;Integrated Security=true;MultipleActiveResultSets=True",
+    //      "__ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True",
+    //      "ConnectionString": "Data Source=192.168.10.5\\SqlExpress;Initial Catalog=Esfs_Live_Replica;User Id=sa;Password=sa123!@#;MultipleActiveResultSets=True;",
+    //      "____ConnectionString": "Data Source=.;Initial Catalog=Esfs_Replica;Integrated Security=true;MultipleActiveResultSets=True;",
+    //      "_____ConnectionString": "Data Source=.;Initial Catalog=DBSyncEsfs;Integrated Security=true;MultipleActiveResultSets=True;",
+    //      "AddRowVersionColumn": true,
+    //      "Mode": "Slave",
+    //      "PopulateOutOfSync": true,
+    //    }
+    //  ]
+    //},
+    {
+      "Name": "Dev Document Content",
+      "Source": {
+        "Name": "Primary",
+        "DebugTables": [ "[dbo].[Person]" ],
+        "ConnectionString": "Data Source=.;Initial Catalog=ChangeTracking;Integrated Security=true;MultipleActiveResultSets=True; Timeout=0",
+
+        "_ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019;Integrated Security=true;MultipleActiveResultSets=True",
+        "__ConnectionString": "Data Source=webserver;Initial Catalog=AviMallEsfs;User Id=sa;Password=sa123!@#;MultipleActiveResultSets=True; Timeout=0"
+      },
+      //"Tables": [ "dbo.DocumentContent" ],
+      "Destinations": [
+        {
+          "Name": "Secondary 1",
+          "ConnectionString": "Data Source=.;Initial Catalog=ChangeTrackingDestination;Integrated Security=true;MultipleActiveResultSets=True; Timeout=0",
+
+          "_ConnectionString": "Data Source=.\\SQLEXPRESS;Initial Catalog=AdventureWorksDW2019Replicated;Integrated Security=true;MultipleActiveResultSets=True",
+          "__ConnectionString": "Data Source=192.168.10.5\\SqlExpress;Initial Catalog=Esfs_Live_Replica;User Id=sa;Password=sa123!@#;MultipleActiveResultSets=True;Timeout=0",
+          "___ConnectionString": "Data Source=.;Initial Catalog=Esfs_Replica;Integrated Security=true;MultipleActiveResultSets=True;",
+          "____ConnectionString": "Data Source=.;Initial Catalog=DBSyncEsfs;Integrated Security=true;MultipleActiveResultSets=True;",
+          "BatchSize": 5,
+          "PopulateOutOfSync": true
+        }
+      ]
+    }
+  ]
+}

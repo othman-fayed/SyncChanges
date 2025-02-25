@@ -1,44 +1,52 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net6.0</TargetFramework>
-    <Description>Synchronize/Replicate database changes using SQL Server Change Tracking</Description>
-    <Copyright>Copyright 2013-$([System.DateTime]::Now.Year) Michael Ganss</Copyright>
-    <AssemblyTitle>SyncChanges.Console</AssemblyTitle>
-    <AppVeyor_Build_Version Condition="'$(APPVEYOR_BUILD_VERSION)' == ''">1.0.0</AppVeyor_Build_Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>$(AppVeyor_Build_Version).0</FileVersion>
-    <PackageVersion>$(AppVeyor_Build_Version)</PackageVersion>
-    <Authors>Michael Ganss</Authors>
-    <AssemblyName>SyncChanges.Console</AssemblyName>
-    <PackageId>SyncChanges.Console</PackageId>
-    <PackageTags>replication synchronization sqlserver sql-server mirroring database</PackageTags>
-    <PackageProjectUrl>https://github.com/mganss/SyncChanges</PackageProjectUrl>
-    <PackageLicenseUrl>https://github.com/mganss/SyncChanges/blob/master/LICENSE</PackageLicenseUrl>
-    <RepositoryType>git</RepositoryType>
-    <RepositoryUrl>git://github.com/mganss/SyncChanges</RepositoryUrl>
-    <RootNamespace>SyncChanges.Console</RootNamespace>
-    <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    <LangVersion>latest</LangVersion>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Mono.Options" Version="6.12.0.148" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="NLog" Version="5.1.5" />
-    <PackageReference Include="NLog.Schema" Version="5.2.0" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.1.1" PrivateAssets="All" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\SyncChanges\SyncChanges.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Update="config.example.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="NLog.config">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net6.0</TargetFramework>
+		<Description>Synchronize/Replicate database changes using SQL Server Change Tracking</Description>
+		<Copyright>Copyright 2013-$([System.DateTime]::Now.Year) Michael Ganss</Copyright>
+		<AssemblyTitle>SyncChanges.Console</AssemblyTitle>
+		<AppVeyor_Build_Version Condition="'$(APPVEYOR_BUILD_VERSION)' == ''">1.0.0</AppVeyor_Build_Version>
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<FileVersion>$(AppVeyor_Build_Version).0</FileVersion>
+		<PackageVersion>$(AppVeyor_Build_Version)</PackageVersion>
+		<Authors>Michael Ganss</Authors>
+		<AssemblyName>SyncChanges.Console</AssemblyName>
+		<PackageId>SyncChanges.Console</PackageId>
+		<PackageTags>replication synchronization sqlserver sql-server mirroring database</PackageTags>
+		<PackageProjectUrl>https://github.com/mganss/SyncChanges</PackageProjectUrl>
+		<PackageLicenseUrl>https://github.com/mganss/SyncChanges/blob/master/LICENSE</PackageLicenseUrl>
+		<RepositoryType>git</RepositoryType>
+		<RepositoryUrl>git://github.com/mganss/SyncChanges</RepositoryUrl>
+		<RootNamespace>SyncChanges.Console</RootNamespace>
+		<EmbedUntrackedSources>true</EmbedUntrackedSources>
+		<IncludeSymbols>true</IncludeSymbols>
+		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
+		<LangVersion>latest</LangVersion>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="Mono.Options" Version="6.12.0.148" />
+		<PackageReference Include="NLog" Version="5.1.5" />
+		<PackageReference Include="NLog.Schema" Version="5.2.0" />
+		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.1.1" PrivateAssets="All" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\SyncChanges\SyncChanges.csproj" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Update="ops.json">
+		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="dev.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="northwind.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="config.example.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="NLog.config">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
 </Project>
