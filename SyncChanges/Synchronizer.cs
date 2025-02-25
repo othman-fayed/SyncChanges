@@ -91,7 +91,7 @@ namespace SyncChanges
                 Log.Info($"Getting replication information for replication set {replicationSet.Name}");
 
                 var tables = GetTables(replicationSet.Source, replicationSet.ExcludeTables);
-                
+
                 // Force adding tables.. Should we !?
                 if (replicationSet.Tables != null && replicationSet.Tables.Any())
                 {
@@ -533,7 +533,7 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
             for (int i = 0; i < changes.Count; i++)
             {
                 var change = changes[i];
-                Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion})");
+                Log.Debug($"Replicating change #{i + 1} of {changes.Count} (Version {change.Version}, CreationVersion {change.CreationVersion}, Operation {change.Operation})");
 
                 if (destination.DisableAllConstraints != true)
                 {
@@ -994,7 +994,14 @@ ORDER BY {string.Join(", ", table.KeyColumns.Select(c => c))}";
                 // Update
                 case 'U':
                     var updateColumnNames = change.Others.Keys.ToList();
-                    var updateSql = string.Format("update {0} set {1} where {2}", tableName,
+                    if (updateColumnNames.Count == 0)
+                    {
+                        Log.Info($"No columns to update for change {change.Table}");
+                        break;
+                    }
+
+                    var updateSql = string.Format("update {0} set {1} where {2}",
+                        tableName,
                         string.Join(", ", updateColumnNames.Select((c, i) => $"{c} = @{i + change.Keys.Count}")),
                         PrimaryKeys(change));
                     var updateValues = change.GetValues();
