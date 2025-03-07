@@ -553,7 +553,15 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
                     }
                 }
 
-                PerformChange(db, change);
+                try
+                {
+                    PerformChange(db, change);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Error performing change {@change}", change);
+                    throw;
+                }
 
                 if ((i + 1) >= changes.Count || changes[i + 1].CreationVersion > change.CreationVersion) // there may be more than one change with the same CreationVersion
                 {
@@ -1022,6 +1030,7 @@ ORDER BY {string.Join(", ", table.KeyColumns.Select(c => c))}";
                         }
                         catch (System.Data.SqlClient.SqlException sqlException)
                         {
+                            // rebase with Source should of fixed it, but didn't
                             var doThrow = true;
                             if (sqlException.Message == "Operand type clash: nvarchar is incompatible with image")
                             {
