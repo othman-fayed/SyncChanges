@@ -559,6 +559,8 @@ WITH(TRACK_COLUMNS_UPDATED = OFF)'  ");
                 }
                 catch (Exception ex)
                 {
+                    // TODO: Table dependency issue. 
+                    // Case: Adding a new User before his Company is added
                     Log.Error(ex, "Error performing change {@change}", change);
                     throw;
                 }
